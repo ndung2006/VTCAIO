@@ -6,8 +6,9 @@
  // Endpoints auth: xem docs/07-AUTH.md.
  //=============================================================================
 import { createServer, type IncomingMessage, type ServerResponse } from 'node:http';
-import { existsSync, mkdirSync, readFileSync, renameSync, writeFileSync } from 'node:fs';
-import { dirname, join } from 'node:path';
+import { createReadStream, existsSync, mkdirSync, readFileSync, renameSync, writeFileSync } from 'node:fs';
+import { stat } from 'node:fs/promises';
+import { dirname, join, sep } from 'node:path';
 import { generateConfText, writeConfFile, DEFAULT_CONF_DIR, ConfigError } from '../core/ConfigGenerator.js';
 import { ProcessManager } from '../core/ProcessManager.js';
 import { Store, type SourceRecord } from './store.js';
@@ -26,7 +27,15 @@ import {
 } from './auth.js';
 import { DEFAULT_RETENTION_DAYS, runGarbageCollector } from '../jobs/garbageCollector.js';
 import { TelegramNotifier, processAlertText } from '../jobs/notify.js';
-import { clampHlsTtl, signHlsToken, signPullToken, verifyPartnerKey } from './hlsToken.js';
+import {
+  clampHlsTtl,
+  signHlsToken,
+  signPullToken,
+  verifyHlsToken,
+  verifyPartnerKey,
+  verifyPullToken,
+} from './hlsToken.js';
+import { buildTimeshiftPlaylist, probeProgramCount, TimeshiftError } from '../timeshift/timeshift.js';
 import { sendResetMail } from './mailer.js';
 import { logger } from '../core/logger.js';
 import { checkHlsHealth } from '../jobs/healthcheck.js';
@@ -149,12 +158,43 @@ export function checkPartnerMapping(all: SourceConfig[]): string | null {
   return null;
 }
 
-/** ISO string hoặc epoch ms → epoch ms (NaN nếu không parse được). */
+/** Timeshift xem lại tối đa 6h/lần (chung lý do với Exporter: bảo vệ I/O). */
+const TIMESIFT_MAX_HOURS = 6;
+
+/**
+ * Token kênh gắn trên URL có hợp lệ cho 2 route timeshift không (miễn gate).
+ * Playlist: channel nằm ở path; chunks: channel nằm ở query. Handler kiểm chặt lại.
+ */
+function hasValidTimeshiftToken(url: URL, seg: string[]): boolean {
+  if (seg[1] !== 'timeshift') return false;
+  const q = url.searchParams;
+  if (seg[2] === 'chunks' && seg.length === 3) {
+    const channel = q.get('channel') ?? '';
+    const pull = q.get('pull');
+    if (pull !== null) return verifyPullToken(channel, pull);
+    const token = q.get('token') ?? '';
+    const exp = Number(q.get('exp') ?? '');
+    return verifyHlsToken(channel, exp, token);
+  }
+  if (seg.length === 3) {
+    const channel = decodeURIComponent(seg[2] ?? '');
+    const pull = q.get('pull');
+    if (pull !== null) return verifyPullToken(channel, pull);
+    const token = q.get('token') ?? '';
+    const exp = Number(q.get('exp') ?? '');
+    return verifyHlsToken(channel, exp, token);
+  }
+  return false;
+}
+
+/** ISO string, chuỗi số epoch hoặc epoch ms → epoch ms (NaN nếu không parse được). */
 function toMs(v: unknown): number {
   if (typeof v === 'number') return v;
   if (typeof v === 'string') {
-    const t = Date.parse(v);
-    return Number.isNaN(t) ? NaN : t;
+    const t = v.trim();
+    if (/^\d+$/.test(t)) return Number(t);
+    const p = Date.parse(t);
+    return Number.isNaN(p) ? NaN : p;
   }
   return NaN;
 }
@@ -228,6 +268,7 @@ export function createApi(opts: ApiOptions = {}): {
   const exportsDir = opts.exportsDir ?? process.env['VTC_EXPORTS_DIR'] ?? 'storage/exports';
   const liveDir = opts.liveDir ?? process.env['VTC_LIVE_DIR'] ?? 'storage/ramdisk';
   const notifier = new TelegramNotifier(); // đọc VTC_TELEGRAM_* từ env, thiếu thì log
+  const tspBin = opts.tspBin ?? process.env['VTC_TSP_BIN'] ?? 'tsp';
   //-- EPG đối tác (lịch đã duyệt): store JSON + client X-API-Key + worker 10p --
   const epgStoreFile = `${dirname(storeFile)}/epg.db.json`;
   const epgStore = new EpgStore(persistEnabled ? epgStoreFile : undefined);
@@ -457,8 +498,12 @@ export function createApi(opts: ApiOptions = {}): {
     }
 
     //-- Gate: mọi /api/* còn lại bắt buộc JWT hợp lệ (verifyAuth) -------------
+    // Ngoại lệ: 2 route timeshift cho phép token kênh (?token=&exp= / ?pull=)
+    // để VLC/app đối tác phát không cần cookie (handler kiểm chặt lại).
     if (seg[0] === 'api') {
-      if (requireAuth(req) === null) return send(res, 401, { error: 'unauthorized' });
+      if (requireAuth(req) === null && !hasValidTimeshiftToken(url, seg)) {
+        return send(res, 401, { error: 'unauthorized' });
+      }
     }
 
     // SSE monitor: GET /api/system/stream (đã qua gate ở trên)
@@ -673,6 +718,102 @@ export function createApi(opts: ApiOptions = {}): {
         return send(res, 404, { error: `Chưa có lịch đã duyệt của ${localName} ngày ${date}` });
       }
       send(res, 200, { ...day, localName });
+      return;
+    }
+
+    //-- Timeshift SPTS (playlist ảo, không tsp/file tạm) -------------------------
+    // GET /api/timeshift/:channel?in=&out= — in/out ISO hoặc epoch ms.
+    // Chỉ SPTS: probe PAT chunk mới nhất, >1 program → 400 "dùng Trích xuất".
+    if (seg[0] === 'api' && seg[1] === 'timeshift' && seg[2] !== undefined && seg[2] !== 'chunks' && seg.length === 3 && m === 'GET') {
+      const channel = decodeURIComponent(seg[2]);
+      const inMs = toMs(url.searchParams.get('inPoint') ?? url.searchParams.get('in'));
+      const outMs = toMs(url.searchParams.get('outPoint') ?? url.searchParams.get('out'));
+      if (!Number.isFinite(inMs) || !Number.isFinite(outMs)) {
+        return send(res, 400, { error: 'in/out phải là thời gian hợp lệ (ISO hoặc epoch ms)' });
+      }
+      if (!(outMs > inMs)) return send(res, 400, { error: 'Thời gian Out phải lớn hơn In' });
+      if (outMs - inMs > TIMESIFT_MAX_HOURS * 3600 * 1000) {
+        return send(res, 400, { error: `Xem lại tối đa ${TIMESIFT_MAX_HOURS} tiếng mỗi lần` });
+      }
+      const found = store
+        .listSources()
+        .flatMap((s) => s.channels.map((c) => ({ s, c })))
+        .find((x) => x.c.name === channel);
+      if (found === undefined) return send(res, 404, { error: `Kênh ${channel} không tồn tại` });
+      const chunks = await exporter.resolveChunks(found.s.id, inMs, outMs);
+      if (chunks.length === 0) {
+        return send(res, 404, { error: 'Không có dữ liệu lưu chiểu trong khoảng đã chọn (quá retention?)' });
+      }
+      let programs: number[];
+      try {
+        const newest = [...chunks].sort().at(-1) as string;
+        programs = await probeProgramCount(tspBin, join(captureDir, found.s.id, newest));
+      } catch (e) {
+        if (e instanceof TimeshiftError) return send(res, 502, { error: e.message });
+        throw e;
+      }
+      if (programs.length > 1) {
+        return send(res, 400, {
+          error: `Luồng đa chương trình (MPTS, ${programs.length} chương trình): timeshift không hỗ trợ — dùng Trích xuất để tải file`,
+        });
+      }
+      // Lan auth của request xuống từng segment (trình phát không kế thừa query).
+      const pull = url.searchParams.get('pull');
+      const token = url.searchParams.get('token') ?? '';
+      const expRaw = url.searchParams.get('exp') ?? '';
+      const query =
+        pull !== null
+          ? `pull=${pull}`
+          : token !== ''
+            ? `token=${token}&exp=${expRaw}`
+            : (() => {
+                const exp = Date.now() + 6 * 3600 * 1000;
+                return `token=${signHlsToken(channel, exp)}&exp=${exp}`;
+              })();
+      const segs = await Promise.all(
+        chunks.map(async (p) => {
+          const file = p.split('/').at(-1) as string;
+          const uri =
+            `/api/timeshift/chunks?source=${encodeURIComponent(found.s.id)}` +
+            `&file=${encodeURIComponent(file)}&channel=${encodeURIComponent(channel)}`;
+          return { file: uri, mtimeMs: (await stat(p)).mtimeMs };
+        }),
+      );
+      const body = buildTimeshiftPlaylist(segs, query);
+      res.writeHead(200, {
+        'content-type': 'application/vnd.apple.mpegurl',
+        'cache-control': 'no-cache',
+        'content-length': Buffer.byteLength(body),
+      });
+      res.end(body);
+      return;
+    }
+    // GET /api/timeshift/chunks?source=&file=&channel=&token|pull= — stream 1 chunk.
+    if (seg[0] === 'api' && seg[1] === 'timeshift' && seg[2] === 'chunks' && seg.length === 3 && m === 'GET') {
+      const sourceId = url.searchParams.get('source') ?? '';
+      const file = url.searchParams.get('file') ?? '';
+      const channel = url.searchParams.get('channel') ?? '';
+      const pull = url.searchParams.get('pull');
+      const authed =
+        pull !== null
+          ? verifyPullToken(channel, pull)
+          : verifyHlsToken(channel, Number(url.searchParams.get('exp') ?? ''), url.searchParams.get('token') ?? '');
+      if (!authed) return send(res, 403, { error: 'Link xem hết hạn hoặc không hợp lệ' });
+      if (!/^[A-Za-z0-9_-]+$/.test(sourceId) || !/^[A-Za-z0-9_.-]+\.ts$/.test(file)) {
+        return send(res, 400, { error: 'tham số không hợp lệ' });
+      }
+      const full = join(captureDir, sourceId, file);
+      const base = join(captureDir, sourceId) + sep;
+      if (!full.startsWith(base)) return send(res, 403, { error: 'Forbidden' });
+      let st: { size: number; isFile: () => boolean };
+      try {
+        st = await stat(full);
+      } catch {
+        return send(res, 404, { error: 'Chunk không còn (có thể đã bị GC dọn)' });
+      }
+      if (!st.isFile()) return send(res, 404, { error: 'Chunk không còn' });
+      res.writeHead(200, { 'content-type': 'video/mp2t', 'content-length': st.size, 'cache-control': 'public, max-age=60' });
+      createReadStream(full).on('error', () => res.destroy()).pipe(res);
       return;
     }
 

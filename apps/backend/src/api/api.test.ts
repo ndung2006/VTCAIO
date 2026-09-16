@@ -15,11 +15,12 @@ const expsDir = '/tmp/vtc-test-exps';
 
 before(() => {
   setLogDir('/tmp/vtc-test-api-logs'); // logger không ghi vào repo
-  // Fake tsp 2 chế độ: arg cuối *.ts → ghi output + exit 0 (export);
-  // ngược lại exec sleep (start/stop process dài hạn).
+  // Fake tsp 3 chế độ: chứa 'tables' → in PAT giả (1 program, hoặc 2 nếu
+  // VTC_FAKE_PROGRAMS=2) rồi exit 0 (cho timeshift probe); arg cuối *.ts → ghi
+  // output + exit 0 (export); ngược lại exec sleep (start/stop dài hạn).
   writeFileSync(
     fakeTsp,
-    '#!/bin/sh\nout=""; for a in "$@"; do out="$a"; done\ncase "$out" in *.ts) echo fake-ts > "$out"; exit 0;; esac\nexec sleep 60\n',
+    '#!/bin/sh\ncase "$*" in *tables*) echo "* PAT, TID 0x00"; echo "    Program:     1 (0x0001)  PID:   32"; if [ "$VTC_FAKE_PROGRAMS" = "2" ]; then echo "    Program:     2 (0x0002)  PID:   33"; fi; exit 0;; esac\nout=""; for a in "$@"; do out="$a"; done\ncase "$out" in *.ts) echo fake-ts > "$out"; exit 0;; esac\nexec sleep 60\n',
     'utf8',
   );
   chmodSync(fakeTsp, 0o755);
@@ -589,6 +590,107 @@ describe('API', { concurrency: false }, () => {
     } finally {
       delete process.env['VTC_EPG_API_KEY'];
     }
+  });
+
+  it('timeshift SPTS: playlist ảo + chunks (mock chunk + fake PAT)', async () => {
+    const { mkdirSync: mk, writeFileSync: wr, utimesSync } = await import('node:fs');
+    const { join } = await import('node:path');
+    mk(join(capsDir, 'TMS'), { recursive: true });
+    const now = Date.now();
+    const files: [string, number][] = [
+      ['catchup_00001.ts', now - 300_000],
+      ['catchup_00002.ts', now - 60_000],
+      ['catchup_00003.ts', now],
+    ];
+    for (const [n, mt] of files) {
+      const p = join(capsDir, 'TMS', n);
+      wr(p, `chunk-${n}`);
+      utimesSync(p, new Date(mt), new Date(mt));
+    }
+    let r = await req('/api/sources', {
+      method: 'POST',
+      headers: { 'content-type': 'application/json' },
+      body: JSON.stringify({
+        id: 'TMS',
+        input: 'file /tmp/x.ts',
+        recordAll: true,
+        channels: [{ name: 'tsShift', serviceId: 70, isLive: false }],
+      }),
+    });
+    assert.equal(r.status, 201);
+
+    const q = `inPoint=${now - 400_000}&outPoint=${now}`;
+    r = await req(`/api/timeshift/tsShift?${q}`);
+    assert.equal(r.status, 200);
+    assert.match(r.headers.get('content-type') ?? '', /mpegurl/);
+    const pl = await r.text();
+    assert.ok(pl.includes('#EXT-X-MEDIA-SEQUENCE:1'));
+    assert.ok(pl.includes('#EXT-X-DISCONTINUITY')); // gap 240s giữa chunk 1-2
+    assert.ok(pl.includes('/api/timeshift/chunks?source=TMS&file=catchup_00002.ts&channel=tsShift&token='));
+    assert.ok(pl.trimEnd().endsWith('#EXT-X-ENDLIST'));
+
+    // Chunk không cookie nhưng token trong URL vẫn 200 (miễn gate đúng).
+    const m = /token=[0-9a-f]{64}&exp=\d+/.exec(pl);
+    assert.ok(m !== null);
+    const noCookie = await fetch(`${base}/api/timeshift/chunks?source=TMS&file=catchup_00002.ts&channel=tsShift&${m[0]}`);
+    assert.equal(noCookie.status, 200);
+    assert.equal(await noCookie.text(), 'chunk-catchup_00002.ts');
+
+    // Token sai nhưng đã login (cookie) → qua gate, rớt ở handler: 403.
+    const bad = await req(
+      `/api/timeshift/chunks?source=TMS&file=catchup_00002.ts&channel=tsShift&token=${'0'.repeat(64)}&exp=9999999999999`,
+    );
+    assert.equal(bad.status, 403);
+    await bad.body?.cancel().catch(() => {});
+    // Thiếu hẳn auth → gate chặn: 401.
+    const naked = await fetch(`${base}/api/timeshift/chunks?source=TMS&file=catchup_00002.ts&channel=tsShift`);
+    assert.equal(naked.status, 401);
+    await naked.body?.cancel().catch(() => {});
+
+    // Traversal + khoảng sai + quá 6h + kênh lạ + hết retention.
+    for (const [path, want] of [
+      [`/api/timeshift/chunks?source=TMS&file=../x.ts&channel=tsShift&${m[0]}`, 400],
+      [`/api/timeshift/tsShift?inPoint=${now}&outPoint=${now - 1000}`, 400],
+      [`/api/timeshift/tsShift?inPoint=${now - 7 * 3600_000}&outPoint=${now}`, 400],
+      [`/api/timeshift/khongco?inPoint=${now - 1000}&outPoint=${now}`, 404],
+      [`/api/timeshift/tsShift?inPoint=1577836800000&outPoint=1577836900000`, 404],
+    ] as [string, number][]) {
+      const rr = await req(path);
+      assert.equal(rr.status, want, path);
+      await rr.body?.cancel().catch(() => {});
+    }
+
+    const d = await req('/api/sources/TMS', { method: 'DELETE' });
+    assert.equal(d.status, 200);
+  });
+
+  it('timeshift MPTS: báo thẳng dùng Trích xuất (fake PAT 2 programs)', async () => {
+    const { mkdirSync: mk, writeFileSync: wr } = await import('node:fs');
+    const { join } = await import('node:path');
+    mk(join(capsDir, 'TMM'), { recursive: true });
+    wr(join(capsDir, 'TMM', 'catchup_00001.ts'), 'mpts');
+    let r = await req('/api/sources', {
+      method: 'POST',
+      headers: { 'content-type': 'application/json' },
+      body: JSON.stringify({
+        id: 'TMM',
+        input: 'file /tmp/x.ts',
+        recordAll: true,
+        channels: [{ name: 'tsMulti', serviceId: 71, isLive: false }],
+      }),
+    });
+    assert.equal(r.status, 201);
+    process.env['VTC_FAKE_PROGRAMS'] = '2';
+    try {
+      const now = Date.now();
+      r = await req(`/api/timeshift/tsMulti?inPoint=${now - 120_000}&outPoint=${now}`);
+      assert.equal(r.status, 400);
+      assert.match(((await r.json()) as { error: string }).error, /MPTS.*Trích xuất/);
+    } finally {
+      delete process.env['VTC_FAKE_PROGRAMS'];
+    }
+    const d = await req('/api/sources/TMM', { method: 'DELETE' });
+    assert.equal(d.status, 200);
   });
 
   it('SSE cần auth + trả event', async () => {

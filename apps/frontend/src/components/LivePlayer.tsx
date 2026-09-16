@@ -11,23 +11,40 @@
 import { useEffect, useRef, useState } from 'react';
 import Hls from 'hls.js';
 
+function fmtClock(sec: number): string {
+  if (!Number.isFinite(sec) || sec < 0) return '0:00';
+  const s = Math.floor(sec);
+  const h = Math.floor(s / 3600);
+  const m = Math.floor((s % 3600) / 60);
+  const r = s % 60;
+  const mm = h > 0 ? String(m).padStart(2, '0') : String(m);
+  return `${h > 0 ? `${h}:` : ''}${mm}:${String(r).padStart(2, '0')}`;
+}
+
 export function LivePlayer({
   streamUrl,
   onFatal,
+  mode = 'live',
 }: {
   streamUrl: string;
   /** Gọi khi lỗi fatal (VD token hết hạn) để trang cha cấp link mới. */
   onFatal?: () => void;
+  /** live: ẩn seekbar. vod (timeshift/xem lại): seekbar + giờ. */
+  mode?: 'live' | 'vod';
 }): React.JSX.Element {
   const videoRef = useRef<HTMLVideoElement>(null);
   const [playing, setPlaying] = useState(true);
   const [muted, setMuted] = useState(true); // autoplay chỉ được khi mute
   const [error, setError] = useState('');
+  const [progress, setProgress] = useState(0); // 0..1000 (chỉ vod)
+  const [times, setTimes] = useState({ cur: 0, dur: 0 });
 
   useEffect(() => {
     const video = videoRef.current;
     if (video === null) return;
     setError('');
+    setProgress(0);
+    setTimes({ cur: 0, dur: 0 });
     let hls: Hls | null = null;
 
     if (video.canPlayType('application/vnd.apple.mpegurl') !== '') {
@@ -62,6 +79,31 @@ export function LivePlayer({
     };
   }, [streamUrl, onFatal]);
 
+  // VOD: theo dõi tiến trình để vẽ seekbar (live không cần).
+  useEffect(() => {
+    const video = videoRef.current;
+    if (video === null || mode !== 'vod') return;
+    const tick = (): void => {
+      const dur = video.duration;
+      const cur = video.currentTime;
+      setTimes({ cur, dur: Number.isFinite(dur) ? dur : 0 });
+      setProgress(Number.isFinite(dur) && dur > 0 ? Math.round((cur / dur) * 1000) : 0);
+    };
+    video.addEventListener('timeupdate', tick);
+    video.addEventListener('loadedmetadata', tick);
+    return () => {
+      video.removeEventListener('timeupdate', tick);
+      video.removeEventListener('loadedmetadata', tick);
+    };
+  }, [mode, streamUrl]);
+
+  const seek = (v: number): void => {
+    const video = videoRef.current;
+    if (video === null) return;
+    const dur = video.duration;
+    if (Number.isFinite(dur) && dur > 0) video.currentTime = (v / 1000) * dur;
+  };
+
   const togglePlay = (): void => {
     const v = videoRef.current;
     if (v === null) return;
@@ -93,6 +135,23 @@ export function LivePlayer({
       <div className="vtc-video-wrap">
         <video ref={videoRef} muted={muted} playsInline />
       </div>
+      {mode === 'vod' ? (
+        <div className="mt-2 flex items-center gap-2">
+          <span className="font-mono text-xs text-slate-500">{fmtClock(times.cur)}</span>
+          <input
+            type="range"
+            min={0}
+            max={1000}
+            value={progress}
+            onChange={(e) => seek(Number(e.target.value))}
+            aria-label="Tua"
+            className="flex-1"
+          />
+          <span className="font-mono text-xs text-slate-500">{fmtClock(times.dur)}</span>
+        </div>
+      ) : (
+        <p className="mt-2 text-xs font-semibold text-red-600">LIVE</p>
+      )}
       {error !== '' && <p className="mt-2 text-sm text-red-600">{error}</p>}
       <div className="mt-2 flex gap-2">
         <button onClick={togglePlay} className="rounded bg-slate-900 px-4 py-2 text-sm text-white">

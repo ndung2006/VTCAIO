@@ -4,7 +4,8 @@
 import { useCallback, useEffect, useMemo, useState } from 'react';
 import { Sidebar } from '@/components/Sidebar';
 import { Header } from '@/components/Header';
-import { api, type EpgDayView, type EpgStatus, type Source } from '@/lib/api';
+import { LivePlayer } from '@/components/LivePlayer';
+import { api, timeshiftUrl, type EpgDayView, type EpgStatus, type Source } from '@/lib/api';
 
 function fmtDT(iso: string): string {
   const d = new Date(iso);
@@ -29,6 +30,8 @@ export default function EpgPage(): React.JSX.Element {
   const [viewChannel, setViewChannel] = useState('');
   const [viewDate, setViewDate] = useState(() => new Date().toISOString().slice(0, 10));
   const [day, setDay] = useState<EpgDayView | null>(null);
+  const [tsUrl, setTsUrl] = useState('');
+  const [tsTitle, setTsTitle] = useState('');
 
   const reload = useCallback(async () => {
     try {
@@ -103,10 +106,33 @@ export default function EpgPage(): React.JSX.Element {
     if (viewChannel === '') return setMsg('Chọn kênh cần xem.');
     setMsg('');
     setDay(null);
+    setTsUrl('');
     try {
       setDay(await api.epgSchedule(viewChannel, viewDate));
     } catch (err) {
       setMsg(err instanceof Error ? err.message : 'Không tải được lịch');
+    }
+  };
+
+  // One-click timeshift: bấm chương trình là phát (chỉ SPTS; MPTS backend báo
+  // thẳng "dùng Trích xuất" và hiện nguyên văn).
+  const watchProgram = async (title: string, startIso: string, endIso: string): Promise<void> => {
+    setMsg('');
+    const a = Date.parse(startIso);
+    const b = Date.parse(endIso);
+    if (!Number.isFinite(a) || !Number.isFinite(b)) return setMsg('Giờ chương trình không hợp lệ.');
+    const url = timeshiftUrl(viewChannel, a, b);
+    try {
+      const r = await fetch(url, { credentials: 'include' });
+      if (!r.ok) {
+        const j = (await r.json().catch(() => ({}))) as { error?: string };
+        return setMsg(j.error ?? `Không xem được (HTTP ${r.status})`);
+      }
+      await r.body?.cancel().catch(() => {});
+      setTsTitle(title);
+      setTsUrl(url);
+    } catch {
+      setMsg('Không gọi được API timeshift.');
     }
   };
 
@@ -233,7 +259,13 @@ export default function EpgPage(): React.JSX.Element {
                 </button>
               )}
             </div>
-            {day !== null && (
+            {tsUrl !== '' && (
+              <div className="mt-3 rounded border p-3">
+                <p className="mb-2 text-sm font-semibold">Đang xem lại: {tsTitle}</p>
+                <LivePlayer key={tsUrl} streamUrl={tsUrl} mode="vod" />
+              </div>
+            )}
+          {day !== null && (
               <div className="mt-3">
                 <p className="mb-2 text-sm text-slate-500">
                   {day.localName} · {day.date} · {day.programs.length} chương trình
@@ -252,6 +284,14 @@ export default function EpgPage(): React.JSX.Element {
                           <td>
                             <span className="font-semibold">{p.title}</span>
                             {p.description !== '' && <span className="text-slate-500"> — {p.description}</span>}
+                          </td>
+                          <td className="pl-2 text-right">
+                            <button
+                              onClick={() => void watchProgram(p.title, p.startTime, p.endTime)}
+                              className="rounded bg-green-600 px-3 py-1 text-white"
+                            >
+                              Xem
+                            </button>
                           </td>
                         </tr>
                       ))}

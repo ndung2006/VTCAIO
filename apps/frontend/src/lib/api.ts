@@ -210,3 +210,8 @@ export function hlsUrl(channelName: string): string {
   const base = process.env.NEXT_PUBLIC_HLS_BASE ?? '/hls';
   return `${base}/${channelName}/index.m3u8`;
 }
+
+/** URL playlist timeshift (SPTS) của 1 chương trình — backend dựng trong RAM. */
+export function timeshiftUrl(channelName: string, inMs: number, outMs: number): string {
+  return `/api/timeshift/${encodeURIComponent(channelName)}?in=${inMs}&out=${outMs}`;
+}
