@@ -5,7 +5,7 @@
 // Poll lịch sử mỗi 3s để thấy PROCESSING → SUCCESS/ERROR mà không reload.
 // Xóa có modal xác nhận (xóa file vật lý, không khôi phục).
 //=============================================================================
-import { useCallback, useEffect, useState } from 'react';
+import { useCallback, useEffect, useRef, useState } from 'react';
 import { Sidebar } from '@/components/Sidebar';
 import { Header } from '@/components/Header';
 import { api, type Source } from '@/lib/api';
@@ -42,6 +42,14 @@ function fmtSize(b: number | null): string {
   return `${Math.round((b / 1024 / 1024) * 10) / 10} MB`;
 }
 
+/** ISO → giá trị input datetime-local (giờ local trình duyệt). */
+function toLocalInput(iso: string): string {
+  const d = new Date(iso);
+  if (Number.isNaN(d.getTime())) return '';
+  const p = (n: number): string => String(n).padStart(2, '0');
+  return `${d.getFullYear()}-${p(d.getMonth() + 1)}-${p(d.getDate())}T${p(d.getHours())}:${p(d.getMinutes())}`;
+}
+
 export default function ExportsPage(): React.JSX.Element {
   const [channels, setChannels] = useState<ChannelOpt[]>([]);
   const [sel, setSel] = useState('');
@@ -50,6 +58,7 @@ export default function ExportsPage(): React.JSX.Element {
   const [msg, setMsg] = useState('');
   const [jobs, setJobs] = useState<ExportJob[]>([]);
   const [confirmDel, setConfirmDel] = useState<ExportJob | null>(null);
+  const prefilled = useRef(false);
 
   useEffect(() => {
     api
@@ -69,6 +78,24 @@ export default function ExportsPage(): React.JSX.Element {
       )
       .catch(() => setChannels([]));
   }, []);
+
+  // Prefill 1 lần từ EPG (?channel=&in=&out=) — đọc window trực tiếp để khỏi
+  // Suspense boundary (useSearchParams bắt buộc bọc Suspense).
+  useEffect(() => {
+    if (prefilled.current || channels.length === 0) return;
+    prefilled.current = true;
+    const q = new URLSearchParams(window.location.search);
+    const ch = q.get('channel') ?? '';
+    const a = q.get('in') ?? '';
+    const b = q.get('out') ?? '';
+    if (ch !== '') {
+      const opt = channels.find((c) => c.channelName === ch);
+      if (opt !== undefined) setSel(opt.key);
+    }
+    if (a !== '') setInp(toLocalInput(a));
+    if (b !== '') setOutp(toLocalInput(b));
+    if (ch !== '' || a !== '' || b !== '') setMsg('Đã điền sẵn từ chương trình EPG — kiểm tra lại rồi bấm Trích xuất.');
+  }, [channels]);
 
   const reload = useCallback(async () => {
     try {

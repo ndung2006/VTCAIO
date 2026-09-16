@@ -27,3 +27,11 @@
   thường, hoặc token kênh trên URL (miễn gate, handler kiểm chặt lại).
 - Player `LivePlayer` thêm mode `vod` (seekbar + giờ, giữ cleanup chống leak RAM).
 - Hết retention/khoảng trống → 400/404 câu rõ ràng, UI hiện nguyên văn.
+
+## Split-view trang kênh (E3)
+
+- `/channel/[id]`: player Live cố định + panel EPG (date picker mặc định ngày
+  mới nhất có lịch, highlight ĐANG PHÁT, nút **Xem** → timeshift vod ngay trong
+  trang + nút **Về Live**, **Trích xuất** → sang `/exports` prefill sẵn kênh +
+  In/Out (đọc query, không cần Suspense), **Xuất EPG** tải JSON ngày).
+- Kênh chưa map EPG: chỉ hiện player (không báo lỗi, không đòi hỏi).
