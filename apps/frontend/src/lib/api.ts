@@ -188,10 +188,11 @@ export const api = {
       headers: { 'content-type': 'application/json' },
       body: JSON.stringify(partnerChannelId === undefined ? {} : { partnerChannelId }),
     }).then((r) => json<{ mappings: number; days: number; updated: number; skipped: number }>(r)),
-  partnerChannels: (search = '', page = 0) =>
-    fetch(`/api/epg/partner-channels?search=${encodeURIComponent(search)}&page=${page}`, {
-      credentials: 'include',
-    }).then((r) => json<{ channels: { id: number; name: string; description: string }[]; total: number }>(r)),
+  partnerChannels: (search = '', page = 0, limit = 200) =>
+    fetch(
+      `/api/epg/partner-channels?search=${encodeURIComponent(search)}&page=${page}&limit=${limit}`,
+      { credentials: 'include' },
+    ).then((r) => json<{ channels: { id: number; name: string; description: string }[]; total: number }>(r)),
   epgSchedule: (channel: string, date: string) =>
     fetch(`/api/epg/schedule?channel=${encodeURIComponent(channel)}&date=${encodeURIComponent(date)}`, {
       credentials: 'include',

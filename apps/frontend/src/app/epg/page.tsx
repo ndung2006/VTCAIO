@@ -27,6 +27,7 @@ export default function EpgPage(): React.JSX.Element {
   const [partnerInputs, setPartnerInputs] = useState<Record<string, string>>({});
   const [search, setSearch] = useState('');
   const [results, setResults] = useState<{ id: number; name: string }[]>([]);
+  const [resultsTotal, setResultsTotal] = useState(0);
   const [viewChannel, setViewChannel] = useState('');
   const [viewDate, setViewDate] = useState(() => {
     const parts = new Intl.DateTimeFormat('en-CA', {
@@ -103,8 +104,9 @@ export default function EpgPage(): React.JSX.Element {
 
   const searchPartner = async (): Promise<void> => {
     try {
-      const r = await api.partnerChannels(search);
+      const r = await api.partnerChannels(search, 0, 200);
       setResults(r.channels);
+      setResultsTotal(r.total);
       if (r.channels.length === 0) setMsg('Không tìm thấy kênh đối tác.');
     } catch (err) {
       setMsg(err instanceof Error ? err.message : 'Tìm thất bại');
@@ -246,11 +248,18 @@ export default function EpgPage(): React.JSX.Element {
                 Tìm
               </button>
             </div>
-            {results.map((r) => (
-              <p key={r.id} className="mt-1 font-mono text-sm">
-                {r.id} — {r.name}
+            {results.length > 0 && (
+              <p className="mt-1 text-xs text-slate-500">
+                Hiện {results.length}/{resultsTotal} kênh — cuộn xuống xem tiếp.
               </p>
-            ))}
+            )}
+            <div className="mt-1 max-h-96 overflow-y-auto rounded border p-2">
+              {results.map((r) => (
+                <p key={r.id} className="py-0.5 font-mono text-sm">
+                  {r.id} — {r.name}
+                </p>
+              ))}
+            </div>
           </div>
 
           <div className="rounded-xl bg-white p-4 shadow">
