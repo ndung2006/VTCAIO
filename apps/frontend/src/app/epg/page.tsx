@@ -189,6 +189,10 @@ export default function EpgPage(): React.JSX.Element {
 
           <div className="rounded-xl bg-white p-4 shadow">
             <h2 className="mb-2 font-semibold">Map kênh local ↔ đối tác</h2>
+            <p className="mb-2 text-xs text-slate-500">
+              Lưu mapping + số ngày lưu được ngay cả khi nguồn đang chạy (không restart).
+              Đổi tên/SID/bật-tắt Live vẫn phải Stop ở trang Nguồn.
+            </p>
             {sources.map((s) => (
               <div key={s.id} className="mb-3 rounded border p-2">
                 <p className="mb-1 text-sm font-semibold">
@@ -214,8 +218,8 @@ export default function EpgPage(): React.JSX.Element {
                 ))}
                 <button
                   onClick={() => void saveSource(s)}
-                  disabled={busy !== '' || s.status === 'RUNNING'}
-                  title={s.status === 'RUNNING' ? 'Stop nguồn trước khi sửa' : 'Lưu mapping'}
+                  disabled={busy !== ''}
+                  title="Lưu mapping (không restart nguồn)"
                   className="mt-1 rounded bg-slate-200 px-3 py-1 text-sm disabled:opacity-50"
                 >
                   Lưu mapping

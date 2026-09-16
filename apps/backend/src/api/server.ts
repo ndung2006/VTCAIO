@@ -959,6 +959,20 @@ export function createApi(opts: ApiOptions = {}): {
           if (dup !== null) return send(res, 400, { error: dup });
           const mapErr = checkPartnerMapping(withMerged);
           if (mapErr !== null) return send(res, 400, { error: mapErr });
+          // Chỉ đổi meta (retention/mapping) → không đụng conf, RUNNING cũng sửa được.
+          const confKey = (s: SourceConfig): string =>
+            JSON.stringify({
+              input: s.input,
+              recordAll: s.recordAll,
+              channels: s.channels.map((c) => [c.name, c.serviceId, c.isLive]),
+            });
+          if (confKey(merged) === confKey(cur)) {
+            const rec = store.updateMeta(id, { retentionDays: patch.retentionDays, channels: merged.channels });
+            savePersisted();
+            logger.info(`sửa meta source ${id} (không restart)`);
+            send(res, 200, rec);
+            return;
+          }
           const updated = store.updateSource(id, patch);
           savePersisted();
           logger.info(`sửa source ${id} (rev ${updated.confRev})`);

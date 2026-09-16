@@ -597,6 +597,60 @@ describe('API', { concurrency: false }, () => {
     }
   });
 
+  it('sửa meta (mapping/retention) khi RUNNING không restart; sửa cấu trúc vẫn 400', async () => {
+    const post = {
+      method: 'POST',
+      headers: { 'content-type': 'application/json' },
+      body: JSON.stringify({
+        id: 'META',
+        input: 'file /tmp/x.ts',
+        recordAll: true,
+        channels: [{ name: 'm1', serviceId: 80, isLive: true }],
+      }),
+    } as RequestInit;
+    let r = await req('/api/sources', post);
+    assert.equal(r.status, 201);
+    r = await req('/api/sources/META/start', { method: 'POST' });
+    assert.equal(r.status, 200);
+
+    // Map ID đối tác lúc đang chạy: 200, giữ RUNNING + pid + rev.
+    r = await req('/api/sources/META', {
+      method: 'PUT',
+      headers: { 'content-type': 'application/json' },
+      body: JSON.stringify({ channels: [{ name: 'm1', serviceId: 80, isLive: true, partnerChannelId: 811 }] }),
+    });
+    assert.equal(r.status, 200);
+    const rec = (await r.json()) as { status: string; pid: number; confRev: number };
+    assert.equal(rec.status, 'RUNNING');
+    assert.ok(rec.pid > 0);
+    assert.equal(rec.confRev, 1);
+    const got = (await (await req('/api/sources/META')).json()) as {
+      channels: { partnerChannelId: number }[];
+    };
+    assert.equal(got.channels[0]?.partnerChannelId, 811);
+
+    // Retention cũng là meta.
+    r = await req('/api/sources/META', {
+      method: 'PUT',
+      headers: { 'content-type': 'application/json' },
+      body: JSON.stringify({ retentionDays: 7 }),
+    });
+    assert.equal(r.status, 200);
+    assert.equal(((await r.json()) as { status: string }).status, 'RUNNING');
+
+    // Đổi tên kênh = đổi cấu trúc → vẫn 400 khi RUNNING.
+    r = await req('/api/sources/META', {
+      method: 'PUT',
+      headers: { 'content-type': 'application/json' },
+      body: JSON.stringify({ channels: [{ name: 'm1doi', serviceId: 80, isLive: true }] }),
+    });
+    assert.equal(r.status, 400);
+
+    await req('/api/sources/META/stop', { method: 'POST' });
+    const d = await req('/api/sources/META', { method: 'DELETE' });
+    assert.equal(d.status, 200);
+  });
+
   it('timeshift SPTS: playlist ảo + chunks (mock chunk + fake PAT)', async () => {
     const { mkdirSync: mk, writeFileSync: wr, utimesSync } = await import('node:fs');
     const { join } = await import('node:path');

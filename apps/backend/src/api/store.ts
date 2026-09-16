@@ -53,6 +53,22 @@ export class Store {
     return next;
   }
 
+  /**
+   * Sửa meta KHÔNG ảnh hưởng conf (retentionDays, partnerChannelId): giữ nguyên
+   * confRev/status/pid, chạy được cả khi RUNNING mà không đụng tiến trình.
+   * Đổi input/recordAll/tên/SID/live vẫn phải đi updateSource (đòi STOPPED).
+   */
+  updateMeta(id: string, patch: { retentionDays?: number; channels?: SourceConfig['channels'] }): SourceRecord {
+    const cur = this.sources.get(id);
+    if (cur === undefined) throw new Error(`Source ${id} không tồn tại`);
+    const clean: { retentionDays?: number; channels?: SourceConfig['channels'] } = {};
+    if (patch.retentionDays !== undefined) clean.retentionDays = patch.retentionDays;
+    if (patch.channels !== undefined) clean.channels = patch.channels;
+    const next: SourceRecord = { ...cur, ...clean, id: cur.id };
+    this.sources.set(id, next);
+    return next;
+  }
+
   deleteSource(id: string): void {
     const cur = this.sources.get(id);
     if (cur === undefined) throw new Error(`Source ${id} không tồn tại`);
