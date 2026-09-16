@@ -297,7 +297,9 @@ export function createApi(opts: ApiOptions = {}): {
     });
     epgLastSyncAt = new Date().toISOString();
     epgLastStats = stats;
-    logger.info(`epg-sync: ${stats.updated} ngày mới/${stats.days} ngày quét (${stats.mappings} kênh map)`);
+    const errPart =
+      stats.errors.length > 0 ? `, LỖI ${stats.errors.length} (VD: ${stats.errors[0]?.error ?? ''})` : '';
+    logger.info(`epg-sync: ${stats.updated} ngày mới/${stats.days} ngày quét (${stats.mappings} kênh map)${errPart}`);
     return stats;
   }
   const exporter =

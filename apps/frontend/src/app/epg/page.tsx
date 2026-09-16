@@ -170,6 +170,13 @@ export default function EpgPage(): React.JSX.Element {
                 ? ` worker ${status.lastSyncAt === null ? 'chưa chạy lần nào' : `lần cuối ${fmtDT(status.lastSyncAt)}`}`
                 : 'Chưa cấu hình VTC_EPG_API_KEY — đồng bộ tay sẽ báo thiếu key.'}
           </p>
+          {status?.lastStats !== null && status?.lastStats !== undefined && status.lastStats.errors.length > 0 && (
+            <p className="rounded bg-red-50 px-3 py-2 text-sm text-red-700">
+              Sync lỗi {status.lastStats.errors.length} lượt — VD: [{status.lastStats.errors[0]?.partnerChannelId}{' '}
+              {status.lastStats.errors[0]?.date}] {status.lastStats.errors[0]?.error} (401 = key sai/chưa kích
+              hoạt, 429 = bị giới hạn tần suất).
+            </p>
+          )}
 
           <div className="rounded-xl bg-white p-4 shadow">
             <h2 className="mb-2 font-semibold">Map kênh local ↔ đối tác</h2>
