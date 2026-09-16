@@ -31,7 +31,7 @@ export interface SourceConfig {
   /** true = ghi MPTS tổng ra đĩa (`-O hls --live 0`), false = `-O drop`. */
   recordAll: boolean;
   /** Số ngày lưu chiểu của cả MPTS (GC dùng chung — xem BRAINSTORM §2.4). */
-  retentionDays?: number;
+  retentionDays?: number | undefined;
   /** Tăng mỗi lần regen để debug/rollback (Phase 2 lưu vào DB). */
   confRev?: number;
 }

@@ -58,10 +58,13 @@ export class Store {
    * confRev/status/pid, chạy được cả khi RUNNING mà không đụng tiến trình.
    * Đổi input/recordAll/tên/SID/live vẫn phải đi updateSource (đòi STOPPED).
    */
-  updateMeta(id: string, patch: { retentionDays?: number; channels?: SourceConfig['channels'] }): SourceRecord {
+  updateMeta(
+    id: string,
+    patch: { retentionDays?: number | undefined; channels?: SourceConfig['channels'] },
+  ): SourceRecord {
     const cur = this.sources.get(id);
     if (cur === undefined) throw new Error(`Source ${id} không tồn tại`);
-    const clean: { retentionDays?: number; channels?: SourceConfig['channels'] } = {};
+    const clean: { retentionDays?: number | undefined; channels?: SourceConfig['channels'] } = {};
     if (patch.retentionDays !== undefined) clean.retentionDays = patch.retentionDays;
     if (patch.channels !== undefined) clean.channels = patch.channels;
     const next: SourceRecord = { ...cur, ...clean, id: cur.id };
