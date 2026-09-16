@@ -29,6 +29,30 @@ describe('ConfigGenerator', () => {
     assert.ok(!gen.content.includes('max-duration'));
   });
 
+  it('VTC_MULTICAST_IFACE tự gắn cho mọi input ip (explicit thắng, file miễn)', () => {
+    const base = {
+      id: 'M',
+      input: 'ip 239.1.1.1:5000',
+      recordAll: false,
+      channels: [{ name: 'm1', serviceId: 11, isLive: true }],
+    };
+    delete process.env['VTC_MULTICAST_IFACE'];
+    assert.ok(!generateConfText(base).content.split('\n').includes('--local-address'));
+    process.env['VTC_MULTICAST_IFACE'] = '172.37.0.200';
+    try {
+      const lines = generateConfText(base).content.split('\n');
+      assert.deepEqual(lines.slice(0, 6), ['-I', 'ip', '239.1.1.1:5000', '--local-address', '172.37.0.200', '-P']);
+      const explicit = generateConfText({ ...base, input: 'ip 239.1.1.1:5000 --local-address 10.0.0.9' });
+      const count = explicit.content.split('\n').filter((l) => l === '--local-address').length;
+      assert.equal(count, 1); // explicit giữ nguyên, không gắn đè
+      assert.ok(explicit.content.includes('10.0.0.9') && !explicit.content.includes('172.37.0.200'));
+      const fileIn = generateConfText({ ...base, input: 'file /tmp/a.ts' });
+      assert.ok(!fileIn.content.split('\n').includes('--local-address'));
+    } finally {
+      delete process.env['VTC_MULTICAST_IFACE'];
+    }
+  });
+
   it('splitInputArgs tách input, tôn trọng ngoặc kép', () => {
     assert.deepEqual(splitInputArgs('ip 239.1.1.1:5000'), ['ip', '239.1.1.1:5000']);
     assert.deepEqual(splitInputArgs('ip 239.1.1.1:5000 --local-address 192.168.1.2'), [

@@ -65,6 +65,11 @@ fi
     printf -- '-I\n'
     # shellcheck disable=SC2086
     for w in $INPUT; do printf -- '%s\n' "$w"; done
+    # Card multicast mặc định (PORT 1-1 với Node): VTC_MULTICAST_IFACE, explicit thắng.
+    case "$INPUT" in
+        ip\ *--local-address*) ;;
+        ip\ *) [ -n "${VTC_MULTICAST_IFACE:-}" ] && printf -- '--local-address\n%s\n' "$VTC_MULTICAST_IFACE" ;;
+    esac
     printf -- '-P\nvtcmonitor\n'
     # Fork HLS từng kênh (chuỗi lệnh là 1 dòng = 1 argv, không quote):
     for c in $CHANNELS; do

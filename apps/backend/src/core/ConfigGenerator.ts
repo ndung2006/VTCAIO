@@ -43,6 +43,18 @@ function assertChannel(c: SourceConfig['channels'][number], index: number): void
 }
 
 /**
+ * Card multicast mặc định cho MỌI input `ip` (VD eth0 172.37.0.200).
+ * Đặt VTC_MULTICAST_IFACE 1 lần là mọi nguồn tự join đúng card — khỏi sửa
+ * từng nguồn, nguồn cũ Start lại là ăn theo (conf sinh lại mỗi lần Start).
+ * Input nào đã ghi --local-address thì giữ nguyên (explicit thắng).
+ */
+function defaultIfaceArgs(input: string): string[] {
+  if (input.trim().split(/\s+/)[0] !== 'ip' || input.includes('--local-address')) return [];
+  const iface = (process.env['VTC_MULTICAST_IFACE'] ?? '').trim();
+  return iface === '' ? [] : ['--local-address', iface];
+}
+
+/**
  * Tách input ("ip 239.1.1.1:5000 --local-address 192.168.1.2") thành argv,
  * tôn trọng ngoặc kép (đường dẫn có dấu cách). KHÔNG qua shell nên không lo
  * injection — nhưng cũng vì thế mà calorie nào cũng phải tách ở đây.
@@ -104,7 +116,7 @@ export function generateConfText(source: SourceConfig): GeneratedConf {
   }
 
   // Mỗi dòng = 1 argv (xem đầu file). Không comment, không ngoặc kép.
-  const args: string[] = ['-I', ...splitInputArgs(source.input), '-P', 'vtcmonitor'];
+  const args: string[] = ['-I', ...splitInputArgs(source.input), ...defaultIfaceArgs(source.input), '-P', 'vtcmonitor'];
   for (const c of live) {
     // Mỗi kênh live = 1 nhánh fork HLS 5s trên RAMDisk (tmpfs ở Prod).
     // Chuỗi lệnh fork là 1 dòng = 1 argv (tương đương shell "..." nhưng không quote).
