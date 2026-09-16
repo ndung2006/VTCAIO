@@ -46,9 +46,16 @@ export function LivePlayer({
     setProgress(0);
     setTimes({ cur: 0, dur: 0 });
     let hls: Hls | null = null;
+    let cleanupNative: (() => void) | null = null;
 
     if (video.canPlayType('application/vnd.apple.mpegurl') !== '') {
-      // Safari native.
+      // Safari native (không có sự kiện fatal chi tiết như hls.js — lỗi src là hết hạn token).
+      const onNativeError = (): void => {
+        setError('Không tải được luồng (có thể link đã hết hạn) — thử tải lại trang.');
+        onFatal?.();
+      };
+      video.addEventListener('error', onNativeError);
+      cleanupNative = () => video.removeEventListener('error', onNativeError);
       video.src = streamUrl;
       void video.play().catch(() => setPlaying(false));
     } else if (Hls.isSupported()) {
@@ -72,6 +79,7 @@ export function LivePlayer({
 
     // Cleanup khi đổi kênh/unmount: hủy instance + xả buffer RAM browser.
     return () => {
+      cleanupNative?.();
       hls?.destroy();
       hls = null;
       video.removeAttribute('src');

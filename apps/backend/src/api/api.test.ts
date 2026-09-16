@@ -62,7 +62,7 @@ describe('API', { concurrency: false }, () => {
             title: 'CT-Test',
             description: '',
             startTime: `${date}T00:00:00+07:00`,
-            endTime: `${date}T00:30:00+07:00`,
+            endTime: `${date}T23:59:00+07:00`,
             updatedAt: `${date}T08:00:00+07:00`,
           },
         ],
@@ -581,9 +581,14 @@ describe('API', { concurrency: false }, () => {
       assert.equal(day.localName, 'kenhEpg');
 
       r = await req('/api/public/channels');
-      const pub = (await r.json()) as { channels: { name: string; epgId: number | null }[] };
+      const pub = (await r.json()) as {
+        channels: { name: string; epgId: number | null; epgNow: { title: string } | null }[];
+      };
       assert.equal(pub.channels.find((c) => c.name === 'kenhEpg')?.epgId, 809);
       assert.equal(pub.channels.find((c) => c.name === 'demo4')?.epgId, null);
+      // Fixture phủ cả ngày → epgNow luôn trúng, không phụ thuộc giờ chạy test.
+      assert.equal(pub.channels.find((c) => c.name === 'kenhEpg')?.epgNow?.title, 'CT-Test');
+      assert.equal(pub.channels.find((c) => c.name === 'demo4')?.epgNow, null);
 
       const d = await req('/api/sources/EPGMAP', { method: 'DELETE' });
       assert.equal(d.status, 200);

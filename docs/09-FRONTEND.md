@@ -8,8 +8,11 @@
 - `app/channel/[id]/page.tsx` — **Live view PRD §4.7**: tiêu đề IN HOA + Stream Link Box + nút Copy (tooltip "Đã sao chép") + player 16:9.
 - `app/login/page.tsx` — form độc lập (PRD §4.8), lỗi chung chung.
 - `app/sources/page.tsx` — CRUD nguồn + kênh nhúng (validate trùng tên instant ở client, chặn cứng ở API).
-- `app/channels/page.tsx` — tồn kho mọi kênh (tìm kiếm, bật/tắt Live, HLS age/stale, cảnh báo trùng tên), link trong Sidebar.
-- `app/exports/page.tsx` — tối thiểu Phase 4 (form export validate Out>In, ≤6h ở client; API async Phase 5).
+- `app/channels/page.tsx` — tồn kho mọi kênh (tìm kiếm, bật/tắt Live, HLS age/stale, cảnh báo trùng tên, nút Link kéo luồng pull), link trong Sidebar.
+- `app/epg/page.tsx` — quản lý EPG (map kênh, đồng bộ tay, xem lịch ngày, Xuất EPG).
+- `app/channel/[id]/page.tsx` — split-view: player Live + panel EPG (now-playing, Xem timeshift, Trích xuất prefill, Xuất EPG).
+- `app/exports/page.tsx` — tối thiểu Phase 4 (form export validate Out>In, ≤6h ở client; API async Phase 5) + prefill từ EPG (`?channel=&in=&out=`).
+- `components/LivePlayer.tsx` — mode `live` (ẩn seekbar) / `vod` (seekbar + giờ); Safari native cũng tự cấp link khi lỗi.
 - `components/LivePlayer.tsx` — **hls.js + lifecycle chống leak**: Safari native thì gán `src`; còn lại `Hls.isSupported()` + `attachMedia`; cleanup `hls.destroy()` + `removeAttribute('src')` + `load()` mỗi khi `streamUrl` đổi. Controls tự làm (Play/Pause, Mute, Fullscreen), không seekbar vì Live.
 - `components/SystemMonitor.tsx` — SSE `/api/system/stream` (EventSource, unmount thì close), RadialBar CPU/RAM/DISK + AreaChart Tx(đỏ)/Rx(xanh).
 - `components/Sidebar.tsx` (dark, kênh + menu) + `Header.tsx` (avatar dropdown logout) + `CopyButton.tsx`.

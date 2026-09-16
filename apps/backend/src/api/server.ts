@@ -42,7 +42,7 @@ import { checkHlsHealth } from '../jobs/healthcheck.js';
 import { Exporter, ExportError } from '../exporter/exporter.js';
 import { EpgClient, EpgError } from '../epg/client.js';
 import { EpgStore } from '../epg/store.js';
-import { syncNow, type SyncMapping, type SyncStats } from '../epg/sync.js';
+import { syncNow, vnToday, type SyncMapping, type SyncStats } from '../epg/sync.js';
 import type { SourceConfig } from '../core/types.js';
 
 export interface ApiOptions {
@@ -644,10 +644,24 @@ export function createApi(opts: ApiOptions = {}): {
     // Schema ổn định cho máy đọc: thêm field không xóa field.
     if (seg[0] === 'api' && seg[1] === 'public' && seg[2] === 'channels' && seg.length === 3 && m === 'GET') {
       const base = (process.env['VTC_PUBLIC_BASE_URL'] ?? '').replace(/\/$/, '');
+      const nowIso = new Date().toISOString();
       const channels = store.listSources().flatMap((s) =>
         s.channels.map((c) => {
           const pull = signPullToken(c.name);
           const path = `/hls/${encodeURIComponent(c.name)}/index.m3u8?pull=${pull}`;
+          // Chương trình đang phát (cho app đối tác hiện now/next mà không cần gọi thêm).
+          // So epoch ms (không so chuỗi: offset +07:00 vs Z khác nhau).
+          let epgNow: { title: string; startTime: string; endTime: string } | null = null;
+          if (typeof c.partnerChannelId === 'number') {
+            const day = epgStore.getDay(c.partnerChannelId, vnToday());
+            const nowMs = Date.parse(nowIso);
+            const cur = day?.programs.find((p) => {
+              const a = Date.parse(p.startTime);
+              const b = Date.parse(p.endTime);
+              return Number.isFinite(a) && Number.isFinite(b) && a <= nowMs && nowMs < b;
+            });
+            if (cur !== undefined) epgNow = { title: cur.title, startTime: cur.startTime, endTime: cur.endTime };
+          }
           return {
             name: c.name,
             serviceId: c.serviceId,
@@ -655,6 +669,7 @@ export function createApi(opts: ApiOptions = {}): {
             status: s.status,
             live: c.isLive,
             epgId: c.partnerChannelId ?? null,
+            epgNow,
             hls: base === '' ? path : `${base}${path}`,
           };
         }),
