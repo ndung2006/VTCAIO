@@ -28,7 +28,16 @@ export default function EpgPage(): React.JSX.Element {
   const [search, setSearch] = useState('');
   const [results, setResults] = useState<{ id: number; name: string }[]>([]);
   const [viewChannel, setViewChannel] = useState('');
-  const [viewDate, setViewDate] = useState(() => new Date().toISOString().slice(0, 10));
+  const [viewDate, setViewDate] = useState(() => {
+    const parts = new Intl.DateTimeFormat('en-CA', {
+      timeZone: 'Asia/Ho_Chi_Minh',
+      year: 'numeric',
+      month: '2-digit',
+      day: '2-digit',
+    }).formatToParts(new Date());
+    const get = (t: string): string => parts.find((p) => p.type === t)?.value ?? '';
+    return `${get('year')}-${get('month')}-${get('day')}`;
+  });
   const [day, setDay] = useState<EpgDayView | null>(null);
   const [tsUrl, setTsUrl] = useState('');
   const [tsTitle, setTsTitle] = useState('');

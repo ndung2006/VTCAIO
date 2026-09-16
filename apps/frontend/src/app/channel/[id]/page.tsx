@@ -62,8 +62,17 @@ export default function ChannelPage({ params }: { params: { id: string } }): Rea
     void mint();
   }, [mint, retriesRef]);
 
-  // Nạp index ngày có lịch của kênh (để date picker + auto-chọn ngày mới nhất).
+  // Nạp index ngày có lịch của kênh. Mặc định HÔM NAY (không tự nhảy tới tương
+  // lai xa); hôm nay trống thì lùi về ngày gần nhất có lịch, rồi mới tới tương lai.
   useEffect(() => {
+    const parts = new Intl.DateTimeFormat('en-CA', {
+      timeZone: 'Asia/Ho_Chi_Minh',
+      year: 'numeric',
+      month: '2-digit',
+      day: '2-digit',
+    }).formatToParts(new Date());
+    const get = (t: string): string => parts.find((p) => p.type === t)?.value ?? '';
+    const today = `${get('year')}-${get('month')}-${get('day')}`;
     api
       .epgStatus()
       .then((st) => {
@@ -71,14 +80,18 @@ export default function ChannelPage({ params }: { params: { id: string } }): Rea
         if (m === undefined) return;
         setMapped(true);
         setDates(m.dates);
-        const latest = m.dates.map((d) => d.date).sort().at(-1) ?? '';
-        if (latest !== '') {
-          setViewDate(latest);
-          api
-            .epgSchedule(name, latest)
-            .then(setDay)
-            .catch(() => setDay(null));
+        const ds = m.dates.map((d) => d.date).sort();
+        const past = ds.filter((d) => d <= today);
+        const fut = ds.filter((d) => d > today);
+        const pick = ds.includes(today) ? today : (past.at(-1) ?? fut[0] ?? today);
+        setViewDate(pick);
+        if (pick !== today) {
+          setMsg(`Hôm nay chưa có lịch đã duyệt — đang hiện ngày ${pick.split('-').reverse().join('/')} gần nhất có lịch.`);
         }
+        api
+          .epgSchedule(name, pick)
+          .then(setDay)
+          .catch(() => setDay(null));
       })
       .catch(() => {});
   }, [name]);
