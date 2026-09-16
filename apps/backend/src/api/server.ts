@@ -31,6 +31,9 @@ import { sendResetMail } from './mailer.js';
 import { logger } from '../core/logger.js';
 import { checkHlsHealth } from '../jobs/healthcheck.js';
 import { Exporter, ExportError } from '../exporter/exporter.js';
+import { EpgClient, EpgError } from '../epg/client.js';
+import { EpgStore } from '../epg/store.js';
+import { syncNow, type SyncMapping, type SyncStats } from '../epg/sync.js';
 import type { SourceConfig } from '../core/types.js';
 
 export interface ApiOptions {
@@ -54,6 +57,8 @@ export interface ApiOptions {
   persist?: boolean;
   /** Tự start lại các source đã RUNNING trước khi restart container. Mặc định true. */
   autoStart?: boolean;
+  /** Inject fetch cho EPG client (test). Mặc định dùng fetch thật. */
+  epgFetchFn?: typeof fetch;
 }
 
 /** Message chung cho login sai (không lộ user nào tồn tại). */
@@ -115,6 +120,30 @@ function duplicateChannelName(all: SourceConfig[]): string | null {
           : `tên kênh "${name}" bị trùng giữa ${prev} và ${s.id} (thư mục HLS sẽ đè nhau)`;
       }
       seen.set(name, s.id);
+    }
+  }
+  return null;
+}
+
+/**
+ * partnerChannelId (map lịch EPG) nếu có phải là số nguyên ≥1 và duy nhất toàn
+ * hệ thống (1 ID đối tác trỏ 2 kênh local là mơ hồ). Trả câu lỗi hoặc null.
+ */
+export function checkPartnerMapping(all: SourceConfig[]): string | null {
+  const seen = new Map<number, string>();
+  for (const s of all) {
+    if (!Array.isArray(s.channels)) continue;
+    for (const c of s.channels) {
+      const pid = (c as { partnerChannelId?: unknown }).partnerChannelId;
+      if (pid === undefined || pid === null) continue;
+      if (!Number.isInteger(pid) || (pid as number) < 1) {
+        return `partnerChannelId của kênh "${(c as { name?: string }).name}" phải là số nguyên ≥1`;
+      }
+      const prev = seen.get(pid as number);
+      if (prev !== undefined) {
+        return `partnerChannelId ${pid} bị map trùng (${prev} và ${s.id})`;
+      }
+      seen.set(pid as number, s.id);
     }
   }
   return null;
@@ -199,6 +228,37 @@ export function createApi(opts: ApiOptions = {}): {
   const exportsDir = opts.exportsDir ?? process.env['VTC_EXPORTS_DIR'] ?? 'storage/exports';
   const liveDir = opts.liveDir ?? process.env['VTC_LIVE_DIR'] ?? 'storage/ramdisk';
   const notifier = new TelegramNotifier(); // đọc VTC_TELEGRAM_* từ env, thiếu thì log
+  //-- EPG đối tác (lịch đã duyệt): store JSON + client X-API-Key + worker 10p --
+  const epgStoreFile = `${dirname(storeFile)}/epg.db.json`;
+  const epgStore = new EpgStore(persistEnabled ? epgStoreFile : undefined);
+  const epgClient =
+    opts.epgFetchFn === undefined ? new EpgClient() : new EpgClient({ fetchFn: opts.epgFetchFn });
+  const epgPastDays = Number(process.env['VTC_EPG_PAST_DAYS'] ?? 2);
+  const epgFutureDays = Number(process.env['VTC_EPG_FUTURE_DAYS'] ?? 7);
+  let epgLastSyncAt: string | null = null;
+  let epgLastStats: SyncStats | null = null;
+  /** Mapping local <- đối tác từ cấu hình sources (kênh có partnerChannelId). */
+  function epgMappings(): SyncMapping[] {
+    return store.listSources().flatMap((s) =>
+      s.channels
+        .filter((c) => typeof c.partnerChannelId === 'number')
+        .map((c) => ({ partnerChannelId: c.partnerChannelId as number, localName: c.name })),
+    );
+  }
+  async function runEpgSync(onlyPartnerId?: number): Promise<SyncStats> {
+    const mappings = epgMappings().filter((m) => onlyPartnerId === undefined || m.partnerChannelId === onlyPartnerId);
+    const stats = await syncNow({
+      store: epgStore,
+      client: epgClient,
+      mappings,
+      pastDays: Number.isFinite(epgPastDays) ? epgPastDays : 2,
+      futureDays: Number.isFinite(epgFutureDays) ? epgFutureDays : 7,
+    });
+    epgLastSyncAt = new Date().toISOString();
+    epgLastStats = stats;
+    logger.info(`epg-sync: ${stats.updated} ngày mới/${stats.days} ngày quét (${stats.mappings} kênh map)`);
+    return stats;
+  }
   const exporter =
     opts.tspBin === undefined
       ? new Exporter({ captureDir, exportsDir, persist: persistEnabled })
@@ -487,6 +547,8 @@ export function createApi(opts: ApiOptions = {}): {
       }
       const dup = duplicateChannelName(records);
       if (dup !== null) return send(res, 400, { error: dup });
+      const mapErr = checkPartnerMapping(records);
+      if (mapErr !== null) return send(res, 400, { error: mapErr });
       try {
         store.replaceAll(records);
       } catch (e) {
@@ -547,11 +609,70 @@ export function createApi(opts: ApiOptions = {}): {
             sourceId: s.id,
             status: s.status,
             live: c.isLive,
+            epgId: c.partnerChannelId ?? null,
             hls: base === '' ? path : `${base}${path}`,
           };
         }),
       );
       send(res, 200, { generatedAt: new Date().toISOString(), baseUrl: base, channels });
+      return;
+    }
+
+    //-- EPG đối tác (đã qua gate) ----------------------------------------------
+    // GET /api/epg/status — mapping local<->đối tác + ngày đã có + lần sync cuối.
+    if (seg[0] === 'api' && seg[1] === 'epg' && seg[2] === 'status' && seg.length === 3 && m === 'GET') {
+      const mappings = epgMappings();
+      const partnerIds = [...new Set(mappings.map((x) => x.partnerChannelId))];
+      send(res, 200, {
+        configured: epgClient.configured,
+        lastSyncAt: epgLastSyncAt,
+        lastStats: epgLastStats,
+        mappings: mappings.map((x) => ({ ...x, dates: epgStore.datesOf(x.partnerChannelId) })),
+        unmappedLocal: store
+          .listSources()
+          .flatMap((s) => s.channels.filter((c) => c.partnerChannelId == null).map((c) => ({ name: c.name, sourceId: s.id }))),
+        partnerTotal: partnerIds.length,
+      });
+      return;
+    }
+    // GET /api/epg/partner-channels?search=&page= — tra cứu ID đối tác để map.
+    if (seg[0] === 'api' && seg[1] === 'epg' && seg[2] === 'partner-channels' && seg.length === 3 && m === 'GET') {
+      try {
+        const page = Number(url.searchParams.get('page') ?? 0);
+        const limit = Number(url.searchParams.get('limit') ?? 20);
+        const search = url.searchParams.get('search') ?? '';
+        send(res, 200, await epgClient.listChannels(page, limit, search));
+      } catch (e) {
+        if (e instanceof EpgError) return send(res, e.status === 429 ? 429 : 400, { error: e.message });
+        throw e;
+      }
+      return;
+    }
+    // POST /api/admin/epg-sync {partnerChannelId?} — đồng bộ ngay (tay/nút UI).
+    if (seg[0] === 'api' && seg[1] === 'admin' && seg[2] === 'epg-sync' && seg.length === 3 && m === 'POST') {
+      if (!epgClient.configured) return send(res, 400, { error: 'chưa cấu hình VTC_EPG_API_KEY' });
+      const b = (await readJson(req)) as { partnerChannelId?: unknown };
+      const only =
+        typeof b.partnerChannelId === 'number' && Number.isInteger(b.partnerChannelId) ? b.partnerChannelId : undefined;
+      if (b.partnerChannelId !== undefined && only === undefined) {
+        return send(res, 400, { error: 'partnerChannelId phải là số nguyên' });
+      }
+      const stats = await runEpgSync(only);
+      send(res, 200, stats);
+      return;
+    }
+    // GET /api/epg/schedule?channel=<localName>&date=YYYY-MM-DD — lịch 1 ngày.
+    if (seg[0] === 'api' && seg[1] === 'epg' && seg[2] === 'schedule' && seg.length === 3 && m === 'GET') {
+      const localName = url.searchParams.get('channel') ?? '';
+      const date = url.searchParams.get('date') ?? '';
+      if (!/^\d{4}-\d{2}-\d{2}$/.test(date)) return send(res, 400, { error: 'date phải YYYY-MM-DD' });
+      const map = epgMappings().find((x) => x.localName === localName);
+      if (map === undefined) return send(res, 404, { error: `Kênh ${localName} chưa map ID EPG đối tác` });
+      const day = epgStore.getDay(map.partnerChannelId, date);
+      if (day === undefined) {
+        return send(res, 404, { error: `Chưa có lịch đã duyệt của ${localName} ngày ${date}` });
+      }
+      send(res, 200, { ...day, localName });
       return;
     }
 
@@ -650,6 +771,8 @@ export function createApi(opts: ApiOptions = {}): {
         }
         const dup = duplicateChannelName([...store.listSources(), body]);
         if (dup !== null) return send(res, 400, { error: dup });
+        const mapErr = checkPartnerMapping([...store.listSources(), body]);
+        if (mapErr !== null) return send(res, 400, { error: mapErr });
         const rec = store.createSource(body);
         savePersisted();
         logger.info(`tạo source ${body.id} (${body.channels.length} kênh)`);
@@ -673,8 +796,11 @@ export function createApi(opts: ApiOptions = {}): {
             if (e instanceof ConfigError) return send(res, 400, { error: e.message });
             throw e;
           }
-          const dup = duplicateChannelName(store.listSources().map((s) => (s.id === id ? merged : s)));
+          const withMerged = store.listSources().map((s) => (s.id === id ? merged : s));
+          const dup = duplicateChannelName(withMerged);
           if (dup !== null) return send(res, 400, { error: dup });
+          const mapErr = checkPartnerMapping(withMerged);
+          if (mapErr !== null) return send(res, 400, { error: mapErr });
           const updated = store.updateSource(id, patch);
           savePersisted();
           logger.info(`sửa source ${id} (rev ${updated.confRev})`);
@@ -778,6 +904,23 @@ export function createApi(opts: ApiOptions = {}): {
             );
             gcTimer.unref?.();
           }
+          // Worker EPG: poll lịch đã duyệt mỗi VTC_EPG_SYNC_MINUTES (mặc định 10).
+          // Thiếu API key thì bỏ qua (dev), tay vẫn gọi được POST epg-sync.
+          let epgTimer: NodeJS.Timeout | undefined;
+          const epgMinutes = Number(process.env['VTC_EPG_SYNC_MINUTES'] ?? 10);
+          if (Number.isFinite(epgMinutes) && epgMinutes > 0 && epgClient.configured) {
+            epgTimer = setInterval(
+              () => {
+                void runEpgSync().catch((e: unknown) => {
+                  logger.warn(`epg-sync định kỳ thất bại: ${e instanceof Error ? e.message : 'lỗi không rõ'}`);
+                });
+              },
+              epgMinutes * 60 * 1000,
+            );
+            epgTimer.unref?.();
+          } else if (!epgClient.configured) {
+            logger.warn('chưa cấu hình VTC_EPG_API_KEY — worker EPG nghỉ, đồng bộ tay ở /admin/epg-sync');
+          }
           // Watchdog HLS 30s (PRD rủi ro #4): playlist đứng >15s dù process RUNNING
           // → restart source chứa kênh stale + bắn Telegram. Cooldown 5'/source.
           // Test xong trước tick đầu (30s) nên không ảnh hưởng; tắt hẳn bằng VTC_HLS_WATCHDOG=0.
@@ -842,6 +985,7 @@ export function createApi(opts: ApiOptions = {}): {
               close: () =>
                 new Promise<void>((r) => {
                   clearInterval(gcTimer);
+                  clearInterval(epgTimer);
                   clearInterval(watchdogTimer);
                   for (const t of pendingRestarts.values()) clearTimeout(t);
                   pendingRestarts.clear();

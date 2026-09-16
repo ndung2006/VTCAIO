@@ -11,6 +11,8 @@ export interface ChannelConfig {
   serviceId: number;
   /** true = sinh nhánh HLS live cho kênh này. */
   isLive: boolean;
+  /** ID kênh trên hệ EPG đối tác (VD 809 = VTV1) — để map lịch phát sóng. */
+  partnerChannelId?: number | null;
 }
 
 /** 1 nguồn tín hiệu (VD TS8 = 1 IP multicast chứa N kênh). */

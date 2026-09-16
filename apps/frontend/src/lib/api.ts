@@ -4,12 +4,40 @@
 export interface Source {
   id: string;
   input: string;
-  channels: { name: string; serviceId: number; isLive: boolean }[];
+  channels: { name: string; serviceId: number; isLive: boolean; partnerChannelId?: number | null }[];
   recordAll: boolean;
   retentionDays?: number;
   confRev: number;
   status: 'RUNNING' | 'STOPPED' | 'ERROR';
   pid?: number;
+}
+
+export interface EpgStatus {
+  configured: boolean;
+  lastSyncAt: string | null;
+  lastStats: {
+    mappings: number;
+    days: number;
+    updated: number;
+    skipped: number;
+    errors: { partnerChannelId: number; date: string; error: string }[];
+  } | null;
+  mappings: {
+    partnerChannelId: number;
+    localName: string;
+    dates: { date: string; updatedAt: string; count: number }[];
+  }[];
+  unmappedLocal: { name: string; sourceId: string }[];
+}
+
+export interface EpgDayView {
+  partnerChannelId: number;
+  date: string;
+  timezone: string;
+  updatedAt: string;
+  fetchedAt: string;
+  localName: string;
+  programs: { id: string; title: string; description: string; startTime: string; endTime: string; updatedAt: string }[];
 }
 
 export interface SystemEvent {
@@ -31,7 +59,7 @@ async function json<T>(res: Response): Promise<T> {
 export interface SourceInput {
   id: string;
   input: string;
-  channels: { name: string; serviceId: number; isLive: boolean }[];
+  channels: { name: string; serviceId: number; isLive: boolean; partnerChannelId?: number | null }[];
   recordAll: boolean;
   retentionDays?: number;
 }
@@ -129,9 +157,33 @@ export const api = {
       json<{
         generatedAt: string;
         baseUrl: string;
-        channels: { name: string; serviceId: number; sourceId: string; status: string; live: boolean; hls: string }[];
+        channels: {
+          name: string;
+          serviceId: number;
+          sourceId: string;
+          status: string;
+          live: boolean;
+          epgId: number | null;
+          hls: string;
+        }[];
       }>(r),
     ),
+  epgStatus: () => fetch('/api/epg/status', { credentials: 'include' }).then((r) => json<EpgStatus>(r)),
+  epgSync: (partnerChannelId?: number) =>
+    fetch('/api/admin/epg-sync', {
+      method: 'POST',
+      credentials: 'include',
+      headers: { 'content-type': 'application/json' },
+      body: JSON.stringify(partnerChannelId === undefined ? {} : { partnerChannelId }),
+    }).then((r) => json<{ mappings: number; days: number; updated: number; skipped: number }>(r)),
+  partnerChannels: (search = '', page = 0) =>
+    fetch(`/api/epg/partner-channels?search=${encodeURIComponent(search)}&page=${page}`, {
+      credentials: 'include',
+    }).then((r) => json<{ channels: { id: number; name: string; description: string }[]; total: number }>(r)),
+  epgSchedule: (channel: string, date: string) =>
+    fetch(`/api/epg/schedule?channel=${encodeURIComponent(channel)}&date=${encodeURIComponent(date)}`, {
+      credentials: 'include',
+    }).then((r) => json<EpgDayView>(r)),
   notifyStatus: () =>
     fetch('/api/admin/notify-status', { credentials: 'include' }).then((r) =>
       json<{ configured: boolean }>(r),

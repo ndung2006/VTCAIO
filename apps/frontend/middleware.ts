@@ -6,7 +6,7 @@
 //=============================================================================
 import { NextResponse, type NextRequest } from 'next/server';
 
-const PROTECTED = ['/', '/dashboard', '/sources', '/channels', '/exports', '/channel', '/admin', '/account'];
+const PROTECTED = ['/', '/dashboard', '/sources', '/channels', '/exports', '/channel', '/admin', '/account', '/epg'];
 
 const PUBLIC = ['/login', '/forgot-password', '/reset-password'];
 

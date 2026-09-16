@@ -6,7 +6,7 @@
   "description": "VTCCatchup backend — ConfigGenerator + ProcessManager (1 Source = 1 tsp process 24/7)",
   "scripts": {
     "build": "tsc -p tsconfig.json",
-    "test": "tsx --test src/core/*.test.ts src/api/*.test.ts src/jobs/*.test.ts src/exporter/*.test.ts",
+    "test": "tsx --test src/core/*.test.ts src/api/*.test.ts src/jobs/*.test.ts src/exporter/*.test.ts src/epg/*.test.ts",
     "dev": "tsx src/server.ts",
     "gen:demo": "tsx src/demo-gen.ts"
   },

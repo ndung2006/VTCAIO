@@ -38,6 +38,38 @@ describe('API', { concurrency: false }, () => {
       headers: { ...(init?.headers ?? {}), ...(cookie === '' ? {} : { cookie }) },
     });
 
+  // Mock API EPG đối tác (shape thật): 1 kênh 809 + lịch theo date trong query.
+  const fakeEpgFetch = (async (url: string) => {
+    if (url.includes('/channels?')) {
+      return new Response(
+        JSON.stringify({ channels: [{ id: 809, name: 'VTV1', description: '' }], total: 1 }),
+        { status: 200 },
+      );
+    }
+    const m = /\/channels\/(\d+)\/epg\?date=([\d-]+)/.exec(url);
+    const pid = m !== null ? Number(m[1]) : 0;
+    const date = m !== null ? (m[2] ?? '') : '';
+    return new Response(
+      JSON.stringify({
+        channelId: pid,
+        date,
+        timezone: '+07:00',
+        programs: [
+          {
+            id: `${pid}-${date}-0`,
+            channelId: pid,
+            title: 'CT-Test',
+            description: '',
+            startTime: `${date}T00:00:00+07:00`,
+            endTime: `${date}T00:30:00+07:00`,
+            updatedAt: `${date}T08:00:00+07:00`,
+          },
+        ],
+      }),
+      { status: 200 },
+    );
+  }) as typeof fetch;
+
   before(async () => {
     const api = createApi({
       port: 0,
@@ -49,6 +81,7 @@ describe('API', { concurrency: false }, () => {
       adminPass: 'test-admin-123',
       persist: false,
       autoStart: false,
+      epgFetchFn: fakeEpgFetch,
     });
     const s = await api.listen(0);
     base = `http://127.0.0.1:${s.port}`;
@@ -468,6 +501,93 @@ describe('API', { concurrency: false }, () => {
       assert.match(demo4.hls, /\/hls\/demo4\/index\.m3u8\?pull=[0-9a-f]{64}$/);
     } finally {
       delete process.env['VTC_PARTNER_KEYS'];
+    }
+  });
+
+  it('epg mapping: id sai/trùng → 400, đúng → 201', async () => {
+    const post = (id: string, channels: unknown): Promise<Response> =>
+      req('/api/sources', {
+        method: 'POST',
+        headers: { 'content-type': 'application/json' },
+        body: JSON.stringify({ id, input: 'file /tmp/x.ts', recordAll: true, channels }),
+      });
+    let r = await post('EPGBAD', [{ name: 'k1', serviceId: 60, isLive: false, partnerChannelId: 0 }]);
+    assert.equal(r.status, 400);
+    assert.match(((await r.json()) as { error: string }).error, /số nguyên/);
+
+    r = await post('EPGMAP', [{ name: 'kenhEpg', serviceId: 61, isLive: false, partnerChannelId: 809 }]);
+    assert.equal(r.status, 201);
+
+    r = await post('EPGDUP', [{ name: 'k2', serviceId: 62, isLive: false, partnerChannelId: 809 }]);
+    assert.equal(r.status, 400);
+    assert.match(((await r.json()) as { error: string }).error, /trùng/);
+
+    r = await req('/api/sources/API1', {
+      method: 'PUT',
+      headers: { 'content-type': 'application/json' },
+      body: JSON.stringify({
+        channels: [
+          { name: 'demo4', serviceId: 4, isLive: true },
+          { name: 'demo5', serviceId: 5, isLive: true, partnerChannelId: -5 },
+        ],
+      }),
+    });
+    assert.equal(r.status, 400);
+  });
+
+  it('epg sync + schedule + public epgId (mock fetch)', async () => {
+    delete process.env['VTC_EPG_API_KEY'];
+    let r = await req('/api/admin/epg-sync', {
+      method: 'POST',
+      headers: { 'content-type': 'application/json' },
+      body: '{}',
+    });
+    assert.equal(r.status, 400); // chưa key thì từ chối rõ ràng
+
+    process.env['VTC_EPG_API_KEY'] = 'K-TEST';
+    try {
+      r = await req('/api/epg/partner-channels?search=VTV');
+      assert.equal(r.status, 200);
+      assert.equal(((await r.json()) as { total: number }).total, 1);
+
+      r = await req('/api/epg/status');
+      assert.equal(r.status, 200);
+      const st = (await r.json()) as { configured: boolean; mappings: { partnerChannelId: number }[] };
+      assert.equal(st.configured, true);
+      assert.ok(st.mappings.some((x) => x.partnerChannelId === 809));
+
+      r = await req('/api/admin/epg-sync', {
+        method: 'POST',
+        headers: { 'content-type': 'application/json' },
+        body: '{}',
+      });
+      assert.equal(r.status, 200);
+      const stats = (await r.json()) as { updated: number; errors: unknown[] };
+      assert.ok(stats.updated >= 1);
+      assert.deepEqual(stats.errors, []);
+
+      const { vnToday } = await import('../epg/sync.js');
+      const today = vnToday();
+      r = await req(`/api/epg/schedule?channel=demo4&date=${today}`);
+      assert.equal(r.status, 404); // demo4 chưa map
+      r = await req('/api/epg/schedule?channel=kenhEpg&date=15/09/2026');
+      assert.equal(r.status, 400);
+      r = await req(`/api/epg/schedule?channel=kenhEpg&date=${today}`);
+      assert.equal(r.status, 200);
+      const day = (await r.json()) as { programs: { title: string }[]; localName: string };
+      assert.equal(day.programs.length, 1);
+      assert.equal(day.programs[0]?.title, 'CT-Test');
+      assert.equal(day.localName, 'kenhEpg');
+
+      r = await req('/api/public/channels');
+      const pub = (await r.json()) as { channels: { name: string; epgId: number | null }[] };
+      assert.equal(pub.channels.find((c) => c.name === 'kenhEpg')?.epgId, 809);
+      assert.equal(pub.channels.find((c) => c.name === 'demo4')?.epgId, null);
+
+      const d = await req('/api/sources/EPGMAP', { method: 'DELETE' });
+      assert.equal(d.status, 200);
+    } finally {
+      delete process.env['VTC_EPG_API_KEY'];
     }
   });
 
