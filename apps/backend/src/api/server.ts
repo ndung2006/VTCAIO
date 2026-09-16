@@ -153,6 +153,10 @@ export function checkPartnerMapping(all: SourceConfig[]): string | null {
         return `partnerChannelId ${pid} bị map trùng (${prev} và ${s.id})`;
       }
       seen.set(pid as number, s.id);
+      const pub = (c as { published?: unknown }).published;
+      if (pub !== undefined && pub !== null && typeof pub !== 'boolean') {
+        return `published của kênh "${(c as { name?: string }).name}" phải là boolean`;
+      }
     }
   }
   return null;
@@ -647,8 +651,12 @@ export function createApi(opts: ApiOptions = {}): {
     if (seg[0] === 'api' && seg[1] === 'public' && seg[2] === 'channels' && seg.length === 3 && m === 'GET') {
       const base = (process.env['VTC_PUBLIC_BASE_URL'] ?? '').replace(/\/$/, '');
       const nowIso = new Date().toISOString();
-      const channels = store.listSources().flatMap((s) =>
-        s.channels.map((c) => {
+      // Opt-in: chỉ kênh được tích published mới lên danh mục đối tác.
+      const channels = store
+        .listSources()
+        .flatMap((s) => s.channels.map((c) => ({ s, c })))
+        .filter((x) => x.c.published === true)
+        .map(({ s, c }) => {
           const pull = signPullToken(c.name);
           const path = `/hls/${encodeURIComponent(c.name)}/index.m3u8?pull=${pull}`;
           // Chương trình đang phát (cho app đối tác hiện now/next mà không cần gọi thêm).
@@ -674,8 +682,7 @@ export function createApi(opts: ApiOptions = {}): {
             epgNow,
             hls: base === '' ? path : `${base}${path}`,
           };
-        }),
-      );
+        });
       send(res, 200, { generatedAt: new Date().toISOString(), baseUrl: base, channels });
       return;
     }

@@ -13,6 +13,11 @@ export interface ChannelConfig {
   isLive: boolean;
   /** ID kênh trên hệ EPG đối tác (VD 809 = VTV1) — để map lịch phát sóng. */
   partnerChannelId?: number | null;
+  /**
+   * true = cho lên danh mục public VTVgo (`GET /api/public/channels`).
+   * Mặc định tắt: không tích là đối tác không thấy, chống lộ kênh nội bộ.
+   */
+  published?: boolean;
 }
 
 /** 1 nguồn tín hiệu (VD TS8 = 1 IP multicast chứa N kênh). */

@@ -2,6 +2,10 @@
 
 > Dành cho phía VTVgo + operator bên ta. Schema JSON ổn định: chỉ thêm field,
 > không xóa/đổi field đang có.
+>
+> Danh mục public là **opt-in theo kênh**: chỉ kênh được tích cột VTVgo (trang
+> Kênh, lưu ngay cả khi RUNNING) mới xuất hiện. Mặc định tắt hết — không lộ
+> kênh nội bộ/thử nghiệm cho đối tác.
 
 ## 1. Tổng quan
 

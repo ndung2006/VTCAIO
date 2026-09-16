@@ -115,7 +115,8 @@ export default function AdminPage(): React.JSX.Element {
             <p className="text-sm text-slate-600">
               Danh mục kênh máy đọc ở <code className="font-mono">/api/public/channels</code>, xác thực bằng
               header <code className="font-mono">Authorization: Bearer &lt;key&gt;</code> (key trong
-              VTC_PARTNER_KEYS ở backend). Link kéo luồng từng kênh tạo ở trang Kênh (nút Link kéo).
+              VTC_PARTNER_KEYS ở backend). Chỉ kênh được <b>tích cột VTVgo</b> ở trang Kênh mới lên
+              danh mục. Link kéo luồng từng kênh tạo ở trang Kênh (nút Link kéo).
             </p>
             <div className="mt-2 flex flex-wrap items-center gap-2">
               <code className="flex-1 break-all rounded bg-slate-100 px-3 py-2 font-mono text-xs text-slate-600">

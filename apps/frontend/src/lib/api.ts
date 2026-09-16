@@ -4,7 +4,13 @@
 export interface Source {
   id: string;
   input: string;
-  channels: { name: string; serviceId: number; isLive: boolean; partnerChannelId?: number | null }[];
+  channels: {
+    name: string;
+    serviceId: number;
+    isLive: boolean;
+    partnerChannelId?: number | null;
+    published?: boolean;
+  }[];
   recordAll: boolean;
   retentionDays?: number;
   confRev: number;
@@ -59,7 +65,13 @@ async function json<T>(res: Response): Promise<T> {
 export interface SourceInput {
   id: string;
   input: string;
-  channels: { name: string; serviceId: number; isLive: boolean; partnerChannelId?: number | null }[];
+  channels: {
+    name: string;
+    serviceId: number;
+    isLive: boolean;
+    partnerChannelId?: number | null;
+    published?: boolean;
+  }[];
   recordAll: boolean;
   retentionDays?: number;
 }

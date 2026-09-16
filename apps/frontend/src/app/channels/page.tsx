@@ -16,6 +16,7 @@ interface Row {
   name: string;
   serviceId: number;
   isLive: boolean;
+  published: boolean;
   ageSec: number | null;
   stale: boolean;
 }
@@ -53,6 +54,7 @@ export default function ChannelsPage(): React.JSX.Element {
           name: c.name,
           serviceId: c.serviceId,
           isLive: c.isLive,
+          published: c.published === true,
           ageSec: health.get(c.name)?.ageSec ?? null,
           stale: health.get(c.name)?.stale ?? false,
         })),
@@ -88,6 +90,31 @@ export default function ChannelsPage(): React.JSX.Element {
       setPullInfo({ name: r.name, url: `${window.location.origin}${j.url}` });
     } catch (err) {
       setMsg(err instanceof Error ? err.message : 'Tạo link kéo luồng thất bại');
+    } finally {
+      setBusy('');
+    }
+  };
+
+  // Tích/bỏ tích VTVgo = meta, chạy được cả khi RUNNING (không restart).
+  const togglePublish = async (r: Row): Promise<void> => {
+    const src = sources.find((s) => s.id === r.sourceId);
+    if (src === undefined) return;
+    setBusy(`pub:${r.sourceId}:${r.name}`);
+    setMsg('');
+    try {
+      await api.updateSource(src.id, {
+        channels: src.channels.map((c) =>
+          c.name === r.name ? { ...c, published: !r.published || undefined } : c,
+        ),
+      });
+      setMsg(
+        r.published
+          ? `Đã gỡ ${r.name} khỏi danh mục VTVgo.`
+          : `Đã đưa ${r.name} lên danh mục VTVgo.`,
+      );
+      await reload();
+    } catch (err) {
+      setMsg(err instanceof Error ? err.message : 'Đổi cờ thất bại');
     } finally {
       setBusy('');
     }
@@ -153,6 +180,7 @@ export default function ChannelsPage(): React.JSX.Element {
                     <th>SID</th>
                     <th>Nguồn</th>
                     <th>Live</th>
+                    <th title="Tích để đưa lên danh mục VTVgo (/api/public/channels)">VTVgo</th>
                     <th>HLS</th>
                     <th></th>
                   </tr>
@@ -187,6 +215,16 @@ export default function ChannelsPage(): React.JSX.Element {
                         >
                           {r.isLive ? 'BẬT' : 'TẮT'}
                         </button>
+                      </td>
+                      <td>
+                        <input
+                          type="checkbox"
+                          checked={r.published}
+                          disabled={busy !== ''}
+                          onChange={() => void togglePublish(r)}
+                          title="Tích để đưa lên danh mục VTVgo (lưu ngay, không restart)"
+                          aria-label={`Đưa ${r.name} lên VTVgo`}
+                        />
                       </td>
                       <td className={r.stale ? 'text-red-600' : 'text-slate-500'}>
                         {r.isLive ? (r.ageSec === null ? 'mất playlist' : `${r.ageSec}s`) : '—'}
