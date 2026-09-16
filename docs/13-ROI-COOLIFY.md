@@ -1,126 +1,110 @@
-# 13 — Backend trên máy WSL (plain compose + systemd, ngoài Coolify)
+# 13 — Triển khai BE (WSL) + FE (Coolify), từng bước
 
-> Mặt bắt tín hiệu chạy 24/7 thì vòng đời phải là systemd, không phải nút
-> Redeploy. Frontend Next.js (stateless) ở lại Coolify.
-> Áp dụng cho backend từ commit `5cbef52` trở đi (TSDuck .deb 3.44-4676,
-> plugin vtcmonitor build sẵn trong image, PORT 18080, link HLS có token).
+> Kiến trúc chốt: backend host-network ngoài Coolify (bắt multicast) +
+> frontend trong Coolify (stateless). Áp dụng từ commit `fb0bf24` trở đi.
 
-## 0. Điều kiện + quy ước
+## 0. Bản đồ cổng và địa chỉ (thuộc lòng trước khi đụng gì)
 
-- Windows 11 22H2+, WSL2 + distro Ubuntu-24.04, máy đã vào đúng LAN tín hiệu.
-- Quy ước dưới đây: `<IP-WIN>` = IP máy Windows, `<MCAST>` = multicast thật.
-- Mọi lệnh WSL chạy trong distro Ubuntu (không phải PowerShell, trừ chỗ ghi rõ).
+| Thành phần | Nghe ở | Ai gọi tới |
+|---|---|---|
+| Backend API + HLS origin | host `18080` (host-network) | FE qua `http://10.0.1.1:18080`, kỹ thuật `curl` trực tiếp |
+| Frontend web | container `3000` | Traefik qua Domains → Internal port `3000` |
+| Traefik dashboard | host `8080` | không đụng vào |
 
-## 1. Windows: mirrored network + nguồn + firewall (làm 1 lần)
+Quy tắc cổng: env `PORT` = Ports exposes = Domains internal port. Lệch 1 chỗ
+là 502/Exited (đã gặp 2 lần).
 
-```powershell
-winver                        # >= 22H2
-wsl --version; wsl -l -v      # wsl >= 2.0; chưa có Ubuntu-24.04 thì: wsl --install -d Ubuntu-24.04
-```
+## 1. Backend trên WSL (máy DESKTOP-A67TQLI)
 
-File `%USERPROFILE%\.wslconfig` (NAT mặc định mù multicast — bắt buộc đổi):
-
-```ini
-[wsl2]
-networkingMode=mirrored
-memory=8GB
-```
-
-```powershell
-wsl --shutdown
-# Sleep/Hibernate = Never (lab ngủ là backend chết). IP tĩnh hoặc DHCP reservation.
-New-NetFirewallRule -DisplayName "VTC-Catchup BE" -Direction Inbound -Protocol TCP -LocalPort 18080 -Action Allow
-```
-
-## 2. Trong WSL: Docker + systemd + code
+### 1.1. Lần đầu (làm 1 lần)
 
 ```bash
-# Docker TRONG distro (đừng qua Docker Desktop — Desktop có VM riêng, lằng nhằng):
-sudo apt update && sudo apt install -y ca-certificates curl gnupg
-sudo install -m 0755 -d /etc/apt/keyrings
-curl -fsSL https://download.docker.com/linux/ubuntu/gpg | sudo gpg --dearmor -o /etc/apt/keyrings/docker.gpg
-echo "deb [signed-by=/etc/apt/keyrings/docker.gpg] https://download.docker.com/linux/ubuntu $(lsb_release -cs) stable" | sudo tee /etc/apt/sources.list.d/docker.list
-sudo apt update && sudo apt install -y docker-ce docker-ce-cli containerd.io docker-compose-plugin git
-sudo usermod -aG docker $USER && newgrp docker && docker --version
-
-# systemd (để chạy unit backend):
-printf '[boot]\nsystemd=true\n' | sudo tee /etc/wsl.conf
-# -> ra PowerShell: wsl --shutdown ; mở lại Ubuntu; kiểm tra:
-systemctl is-system-running   # running/degraded đều OK
-
-# Code (kho do bạn làm chủ, ngoài tầm Coolify):
+# .wslconfig: networkingMode=mirrored, memory=8GB → wsl --shutdown
+# Windows: Sleep=Never, IP tĩnh/DHCP reservation, firewall inbound TCP 18080.
 sudo mkdir -p /srv/vtccatchup && sudo chown $USER:$USER /srv/vtccatchup
 git clone https://github.com/ndung2006/VTC-Catchup /srv/vtccatchup/repo
-cd /srv/vtccatchup/repo && git checkout main && git log --oneline -1
-```
-
-## 3. Secret + ổ đĩa + mạng (làm 1 lần, kiểm từng dòng)
-
-```bash
-# Secret — sinh 2 chuỗi, GIỮ LẠI để dán sang Frontend sau:
-openssl rand -hex 32   # -> VTC_JWT_SECRET
-openssl rand -hex 32   # -> VTC_HLS_SECRET (phải GIỐNG HỆT 2 bên, lệch là 403 hết link xem)
-cp .env.prod.example .env.prod && nano .env.prod
-# Điền: 2 secret trên, VTC_ADMIN_USER=admin + pass mạnh, Telegram bot/chat,
-# PORT=18080. SMTP để trống cũng được.
-
-# Ổ đĩa (compose bind trực tiếp, phải tồn tại trước):
+cd /srv/vtccatchup/repo && git checkout main
+cp .env.prod.example .env.prod && chmod 600 .env.prod && nano .env.prod
 sudo mkdir -p /mnt/Data/catchup/captures /mnt/Data/catchup/exports /opt/vtc/conf/sources /var/log/vtccatchup /media/ramdisk/live
 echo 'tmpfs /media/ramdisk/live tmpfs size=4G 0 0' | sudo tee -a /etc/fstab
 sudo mount -a && df -h /media/ramdisk/live
-
-# Mạng mirrored có ăn không? (WSL mirrored KHÔNG dùng netplan — sai là sửa phía Windows)
-ip addr | grep -E 'inet 192\.168'      # phải thấy IP của Windows
-ip route get <MCAST>                   # phải ra đúng card đi về phía nguồn phát
+ip route get 239.1.1.1   # phải ra đúng card về phía nguồn phát
 ```
 
-**Sao lưu cấu hình đang chạy** trước khi đụng gì: `/admin` → Tải file sao lưu.
-
-## 4. Build + bật + verify 5 dòng (thiếu 1 dòng là dừng)
+`.env.prod` bắt buộc điền (còn lại để trống được):
+`VTC_JWT_SECRET`, `VTC_ADMIN_USER/EMAIL/PASS`, `VTC_HLS_SECRET` (sinh riêng,
+**dán y hệt sang FE**), `VTC_PARTNER_KEYS=vtvgo:<key>`, `VTC_EPG_API_KEY`,
+`VTC_PUBLIC_BASE_URL=https://catchup.vtcrd.top`, `VTC_TELEGRAM_BOT_TOKEN/CHAT_ID`,
+`PORT=18080`.
 
 ```bash
-cd /srv/vtccatchup/repo
-docker compose -f docker-compose.catchup.yml build backend   # ~1-2 phút (.deb ghim 3.44-4676)
+docker compose -f docker-compose.catchup.yml build backend
 docker compose -f docker-compose.catchup.yml up -d backend
+sudo cp systemd/vtccatchup-backend.service /etc/systemd/system/
+sudo systemctl daemon-reload && sudo systemctl enable --now vtccatchup-backend
+```
+
+Verify (thiếu 1 dòng là dừng):
+```bash
 docker inspect vtccatchup-backend --format '{{.HostConfig.NetworkMode}}'  # host
 docker exec vtccatchup-backend tsp --version                              # 3.44-4676
 docker exec vtccatchup-backend tsp -P vtcmonitor --help >/dev/null && echo PLUGIN-OK
 curl -m 5 -s http://127.0.0.1:18080/health                                # {"ok":true}
 ```
 
-Thử tín hiệu thô (chưa qua UI):
+### 1.2. Cập nhật thường kỳ (mỗi lần có commit mới)
 
 ```bash
-tsp -I ip <MCAST> -P analyze -O drop
-# Có bitrate/packet chạy = đường tín hiệu vào tới nơi. Ctrl-C thoát.
+cd /srv/vtccatchup/repo && git pull && git log --oneline -1
+# Đổi .env.prod trước nếu commit mới thêm biến (xem git log/CHANGELOG).
+docker compose -f docker-compose.catchup.yml build backend
+docker compose -f docker-compose.catchup.yml up -d backend   # recreate mới ăn env
+sleep 5 && curl -m 5 -s http://127.0.0.1:18080/health; echo
 ```
 
-Giao systemd giữ sau reboot:
+Lưu ý: đổi `VTC_JWT_SECRET` = mọi phiên login chết (đăng nhập lại);
+đổi `PORT` = FE + firewall đổi theo; nguồn RUNNING tự chạy lại sau vài giây.
 
-```bash
-sudo cp systemd/vtccatchup-backend.service /etc/systemd/system/
-sudo systemctl daemon-reload && sudo systemctl enable --now vtccatchup-backend
-```
+## 2. Frontend trên Coolify (máy này)
 
-## 5. Nối Frontend (Coolify, 2 phút)
+Resource Frontend Catchup, domain `catchup.vtcrd.top`:
 
-`VTC_API_ORIGIN=http://<IP-WIN>:18080` + `VTC_HLS_SECRET` (chuỗi bước 3) →
-Deploy Frontend → `/login` → `/admin` xanh → bắn tin thử → `/sources` thêm nguồn
-(`-I ip <MCAST>`, kênh + SID) → Start → `/channels` → `/channel/<tên>` xem live,
-link token sống 4 giờ, copy sang VLC chạy.
+1. Environment Variables:
+   - `VTC_API_ORIGIN=http://10.0.1.1:18080` (gateway mạng coolify, ổn định)
+   - `VTC_HLS_SECRET` = y hệt backend
+   - `PORT=3000`
+2. Ports exposes `3000`, Port mappings **trống**, Domains → Internal port `3000`.
+3. Persistent Storage: `/media/ramdisk/live` → `/media/ramdisk/live`
+   (thiếu là `/hls` 404 toàn bộ — đã gặp).
+4. **Deploy** (đổi biến/env chỉ cần Deploy, không cần Force Rebuild trừ khi
+   build lỗi; restart thường KHÔNG nạp env mới).
 
-## 6. Thử reboot + rollback
+Verify: domain → `/login` → `/admin` xanh → bắn tin thử → `/sources`,
+`/channels`, `/epg` mở được.
 
-Restart Windows → mở Ubuntu → `docker ps` thấy backend tự lên, health OK, nguồn
-RUNNING tự chạy lại. Hỏng: `docker logs vtccatchup-backend | tail -30`.
+## 3. Nghiệp vụ đầu tiên (sau khi 2 bên xanh)
 
-Lui về: `docker compose -f docker-compose.catchup.yml stop backend`, trỏ FE về
-backend cũ + Deploy FE. Cấu hình còn trong `/opt/vtc/conf/sources/sources.db.json`
-và file backup bước 3.
+1. `/sources` → thêm nguồn multicast thật (input `ip <nhóm>:<cổng>`, SID lấy từ
+   `tsp -P tables --pid 0`), Start → RUNNING.
+2. `/channels` → playlist hết "mất playlist" → `/channel/<tên>` xem live.
+3. `/epg` → map ID đối tác → Đồng bộ ngay → xem lịch → **Xem** thử timeshift
+   (chỉ SPTS; MPTS báo thẳng dùng Trích xuất).
+4. `/exports` → trích xuất thử 5–10 phút → tải file.
+5. `curl` danh mục VTVgo bằng Bearer → VLC mở link `?pull=` (không login).
 
-## Ghi nhớ vận hành
+## 4. Xử sự cố nhanh
 
-- TSDuck ghim `3.44-4676` (ARG trong Dockerfile.backend, chung version VTC-SI).
-  Đổi version = đổi hành vi → Start thử 1 nguồn rồi mới tin.
-- Không CPU quota (compose đã bỏ); RAM 2G; log 2 lớp (`vtc.log` xoay + json-file).
-- VTC-SI chạy máy khác, không đụng cổng nhau (SI web `:8080`, Catchup `:18080`).
+| Hiện tượng | Nguyên nhân chắc nhất | Làm gì |
+|---|---|---|
+| Domain 502 | FE Exited / lệch cổng (3 số không đồng nhất) | Deployments log + đồng nhất PORT/exposes/internal |
+| `/admin` HTTP 504 | FE không với tới BE (sai `VTC_API_ORIGIN`, BE chết) | `wget` từ trong FE tới origin; `curl` health trên host BE |
+| `/admin` unauthorized | Cookie chết (đổi secret/recreate) | Đăng nhập lại |
+| Source ERROR ngay khi Start | Đọc log: `tsp @conf` tay (conf sai) / thiếu thư mục (bản cũ) / mất tín hiệu | `docker exec ... tsp @/opt/vtc/conf/sources/<id>.conf` |
+| Mất playlist >30s khi RUNNING | Fork gãy / tín hiệu mất | log backend + `ls /media/ramdisk/live/<kênh>/` |
+| EPG trống ngày hôm nay | Chưa duyệt (bình thường) | Xem ngày đã duyệt gần nhất |
+
+## 5. Lui về
+
+- BE: bản cũ còn tag trong Docker (`docker images`) hoặc `git checkout <cũ>` +
+  build + up -d. Cấu hình nằm ở volume/file ngoài image nên còn nguyên.
+- FE: Deployments → Deploy lại bản cũ.
