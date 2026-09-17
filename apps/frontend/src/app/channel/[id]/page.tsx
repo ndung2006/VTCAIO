@@ -5,6 +5,9 @@
 //   + Trích xuất (prefill sang /exports) + Xuất EPG (tải JSON ngày).
 // - Kênh chưa map EPG: chỉ hiện player (không báo lỗi).
 import { useCallback, useEffect, useRef, useState } from 'react';
+
+/** Chừa ~3 dòng phía trên chương trình đang phát khi tự cuộn. */
+const SCROLL_ABOVE_PX = 120;
 import { useRouter } from 'next/navigation';
 import { Sidebar } from '@/components/Sidebar';
 import { Header } from '@/components/Header';
@@ -54,6 +57,8 @@ export default function ChannelPage({ params }: { params: { id: string } }): Rea
   const [vod, setVod] = useState<{ url: string; title: string } | null>(null);
   // EPG: bấm 1 chương trình để chọn → thanh dưới hiện khoảng giờ + nút Xem/Trích xuất.
   const [selId, setSelId] = useState<string | null>(null);
+  const epgListRef = useRef<HTMLUListElement | null>(null);
+  const epgItemRefs = useRef(new Map<string, HTMLLIElement>());
 
   const retriesRef = retries;
   const mint = useCallback(async () => {
@@ -121,6 +126,24 @@ export default function ChannelPage({ params }: { params: { id: string } }): Rea
     retriesRef.current += 1;
     void mint();
   }, [mint, retriesRef]);
+
+  // Lịch về → tự cuộn tới chương trình đang phát, chừa ~3 dòng phía trên.
+  // Đầu/cuối danh sách trình duyệt tự kẹp (đầu thì hiện từ đỉnh, cuối thì tới đáy).
+  useEffect(() => {
+    if (day === null) return;
+    const t = Date.now();
+    const cur = day.programs.find((p) => Date.parse(p.startTime) <= t && t < Date.parse(p.endTime));
+    if (cur === undefined) return;
+    const raf = requestAnimationFrame(() => {
+      const box = epgListRef.current;
+      const el = epgItemRefs.current.get(cur.id);
+      if (box === null || el === undefined) return;
+      const dr = box.getBoundingClientRect();
+      const er = el.getBoundingClientRect();
+      box.scrollTop += er.top - dr.top - SCROLL_ABOVE_PX;
+    });
+    return () => cancelAnimationFrame(raf);
+  }, [day]);
 
   /** Nạp lịch ngày + tự chọn chương trình đang phát (nếu có). */
   const applyDay = (d: EpgDayView | null): void => {
@@ -241,12 +264,18 @@ export default function ChannelPage({ params }: { params: { id: string } }): Rea
                   <p className="text-sm text-amber-600">Ngày này chưa có lịch đã duyệt.</p>
                 ) : (
                   <>
-                    <ul className="max-h-[60vh] divide-y overflow-auto">
+                    <ul ref={epgListRef} className="max-h-[60vh] divide-y overflow-auto">
                       {day.programs.map((p) => {
                         const now = isNow(p.startTime, p.endTime);
                         const sel = selId === p.id;
                         return (
-                          <li key={p.id}>
+                          <li
+                            key={p.id}
+                            ref={(el) => {
+                              if (el === null) epgItemRefs.current.delete(p.id);
+                              else epgItemRefs.current.set(p.id, el);
+                            }}
+                          >
                             <button
                               onClick={() => setSelId(sel ? null : p.id)}
                               className={`flex w-full items-baseline gap-3 px-1 py-2 text-left ${sel ? 'bg-sky-50' : ''}`}
