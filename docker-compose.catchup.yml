@@ -48,6 +48,10 @@ services:
     mem_limit: 2g
     stop_grace_period: 15s # cho tsp SIGTERM dọn file HLS đang ghi
     restart: unless-stopped
+    # Backend (Node PID 1) spawn tsp liên tục (probe/zap/start/stop) — không có
+    # init thu dọn là tiến trình con chết thành zombie, sự kiện exit có thể mất,
+    # promise treo theo (đúng kiểu treo timeshift đã gặp). tini của Docker lo.
+    init: true
     logging:
       driver: json-file
       options: {max-size: "20m", max-file: "5"}
