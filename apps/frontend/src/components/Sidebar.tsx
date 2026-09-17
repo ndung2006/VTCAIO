@@ -14,12 +14,13 @@ function BrandLogo(): React.JSX.Element {
   const [broken, setBroken] = useState(false);
   if (broken) return <span className="font-bold text-white">VTC Catchup</span>;
   return (
-    <span className="block rounded bg-white px-2 py-1.5">
+    // Logo trắng nền trong suốt → để trực tiếp trên sidebar đen, không khung trắng.
+    <span className="block px-1 py-1">
       {/* eslint-disable-next-line @next/next/no-img-element */}
       <img
         src="/logo-vtc-digital.png"
         alt="VTC Digital — Truyền hình số vệ tinh"
-        className="h-9 w-auto"
+        className="h-10 w-auto"
         onError={() => setBroken(true)}
       />
     </span>
