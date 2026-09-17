@@ -35,9 +35,12 @@ services:
     volumes:
       # RAMDisk live (host mount tmpfs trước) + HDD catchup + conf + log.
       # Đường dẫn host PHẢI tồn tại trước khi up (xem docs/13-ROI-COOLIFY.md).
+      # Đổi ổ đĩa (VD ổ E: qua drvfs /mnt/e) thì đặt 2 biến host dưới đây trong
+      # .env.prod — đường dẫn TRONG container giữ nguyên nên conf/exporter/GC
+      # không phải sửa gì, chunk cũ chuyển sang là timeshift/export vẫn đúng giờ.
       - /media/ramdisk/live:/media/ramdisk/live
-      - /mnt/Data/catchup/captures:/mnt/Data/catchup/captures
-      - /mnt/Data/catchup/exports:/mnt/Data/catchup/exports
+      - ${VTC_HOST_CAPTURE_DIR:-/mnt/Data/catchup/captures}:/mnt/Data/catchup/captures
+      - ${VTC_HOST_EXPORTS_DIR:-/mnt/Data/catchup/exports}:/mnt/Data/catchup/exports
       - /opt/vtc/conf/sources:/opt/vtc/conf/sources
       - /var/log/vtccatchup:/app/storage/logs
     # KHÔNG đặt CPU quota: throttle cgroup chèn khoảng lặng vào luồng TS,
