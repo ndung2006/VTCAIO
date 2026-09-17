@@ -22,7 +22,7 @@ function BrandLogo(): React.JSX.Element {
         className="h-10 w-auto"
         onError={() => setBroken(true)}
       />
-      <span className="text-lg font-bold text-red-600">Legal Deposit</span>
+      <span className="text-lg font-bold text-white">Legal Deposit</span>
     </span>
   );
 }
