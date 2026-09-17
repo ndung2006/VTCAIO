@@ -5,7 +5,6 @@
 //   + Trích xuất (prefill sang /exports) + Xuất EPG (tải JSON ngày).
 // - Kênh chưa map EPG: chỉ hiện player (không báo lỗi).
 import { useCallback, useEffect, useRef, useState } from 'react';
-import Link from 'next/link';
 import { useRouter } from 'next/navigation';
 import { Sidebar } from '@/components/Sidebar';
 import { Header } from '@/components/Header';
@@ -18,6 +17,23 @@ function fmtT(iso: string): string {
   const d = new Date(iso);
   if (Number.isNaN(d.getTime())) return iso;
   return d.toLocaleString('vi-VN', { timeZone: 'Asia/Ho_Chi_Minh', hour: '2-digit', minute: '2-digit' });
+}
+
+/** DD-MM-YYYY HH:mm (giờ VN) cho thanh khoảng giờ đã chọn. */
+function fmtDT(iso: string): string {
+  const d = new Date(iso);
+  if (Number.isNaN(d.getTime())) return iso;
+  const p = new Intl.DateTimeFormat('en-GB', {
+    timeZone: 'Asia/Ho_Chi_Minh',
+    day: '2-digit',
+    month: '2-digit',
+    year: 'numeric',
+    hour: '2-digit',
+    minute: '2-digit',
+    hour12: false,
+  }).formatToParts(d);
+  const get = (t: string): string => p.find((x) => x.type === t)?.value ?? '';
+  return `${get('day')}-${get('month')}-${get('year')} ${get('hour')}:${get('minute')}`;
 }
 
 export default function ChannelPage({ params }: { params: { id: string } }): React.JSX.Element {
@@ -36,8 +52,8 @@ export default function ChannelPage({ params }: { params: { id: string } }): Rea
   const [day, setDay] = useState<EpgDayView | null>(null);
   // Player 2 chế độ: live mặc định, vod khi Xem từ EPG.
   const [vod, setVod] = useState<{ url: string; title: string } | null>(null);
-  // EPG: bấm tên chương trình thì bung chi tiết + nút Xem/Trích xuất.
-  const [openId, setOpenId] = useState<string | null>(null);
+  // EPG: bấm 1 chương trình để chọn → thanh dưới hiện khoảng giờ + nút Xem/Trích xuất.
+  const [selId, setSelId] = useState<string | null>(null);
 
   const retriesRef = retries;
   const mint = useCallback(async () => {
@@ -106,26 +122,27 @@ export default function ChannelPage({ params }: { params: { id: string } }): Rea
     void mint();
   }, [mint, retriesRef]);
 
-  /** Nạp lịch ngày + tự bung chương trình đang phát (nếu có). */
+  /** Nạp lịch ngày + tự chọn chương trình đang phát (nếu có). */
   const applyDay = (d: EpgDayView | null): void => {
     setDay(d);
     if (d === null) {
-      setOpenId(null);
+      setSelId(null);
       return;
     }
     const t = Date.now();
     const cur = d.programs.find((p) => Date.parse(p.startTime) <= t && t < Date.parse(p.endTime));
-    setOpenId(cur?.id ?? null);
+    setSelId(cur?.id ?? null);
   };
 
-  const loadDay = async (): Promise<void> => {
-    if (viewDate === '') return;
+  const loadDay = async (date?: string): Promise<void> => {
+    const d = date ?? viewDate;
+    if (d === '') return;
     setMsg('');
     try {
-      applyDay(await api.epgSchedule(name, viewDate));
+      applyDay(await api.epgSchedule(name, d));
     } catch (err) {
       setDay(null);
-      setOpenId(null);
+      setSelId(null);
       setMsg(err instanceof Error ? err.message : 'Không tải được lịch');
     }
   };
@@ -152,16 +169,6 @@ export default function ChannelPage({ params }: { params: { id: string } }): Rea
   const exportProgram = (title: string, startIso: string, endIso: string): void => {
     const q = new URLSearchParams({ channel: name, in: startIso, out: endIso, title });
     router.push(`/exports?${q.toString()}`);
-  };
-
-  const downloadDay = (): void => {
-    if (day === null) return;
-    const blob = new Blob([JSON.stringify(day, null, 2)], { type: 'application/json' });
-    const a = document.createElement('a');
-    a.href = URL.createObjectURL(blob);
-    a.download = `epg-${day.localName}-${day.date}.json`;
-    a.click();
-    URL.revokeObjectURL(a.href);
   };
 
   const isNow = (startIso: string, endIso: string): boolean => {
@@ -215,79 +222,71 @@ export default function ChannelPage({ params }: { params: { id: string } }): Rea
 
             {mapped && (
               <div className="rounded-xl bg-white p-4 shadow">
-                <div className="mb-2 flex flex-wrap items-center gap-2">
+                <div className="mb-2 flex items-center gap-2">
                   <h2 className="font-semibold">Lịch phát sóng</h2>
-                  <div className="ml-auto flex gap-2">
-                    <Link href="/epg" className="rounded bg-slate-200 px-2 py-1.5 text-xs">
-                      EPG
-                    </Link>
-                    {day !== null && (
-                      <button onClick={downloadDay} className="rounded bg-slate-200 px-2 py-1.5 text-xs">
-                        Xuất
-                      </button>
-                    )}
-                  </div>
-                </div>
-                <div className="mb-2 flex gap-2">
                   <input
                     type="date"
                     value={viewDate}
-                    onChange={(e) => setViewDate(e.target.value)}
-                    className="min-w-0 flex-1 rounded border px-2 py-1.5 text-sm"
+                    onChange={(e) => {
+                      setViewDate(e.target.value);
+                      setSelId(null);
+                      void loadDay(e.target.value);
+                    }}
+                    className="ml-auto min-w-0 flex-1 rounded border px-2 py-1.5 text-sm"
                   />
-                  <button onClick={loadDay} className="shrink-0 rounded bg-slate-200 px-3 py-1.5 text-sm">
-                    Xem
-                  </button>
                 </div>
                 {day === null ? (
                   <p className="text-sm text-slate-500">Chưa có lịch ngày này (chỉ hiện lịch đã duyệt).</p>
                 ) : day.programs.length === 0 ? (
                   <p className="text-sm text-amber-600">Ngày này chưa có lịch đã duyệt.</p>
                 ) : (
-                  <ul className="max-h-[60vh] space-y-1 overflow-auto">
-                    {day.programs.map((p) => {
-                      const now = isNow(p.startTime, p.endTime);
-                      const open = openId === p.id;
+                  <>
+                    <ul className="max-h-[60vh] divide-y overflow-auto">
+                      {day.programs.map((p) => {
+                        const now = isNow(p.startTime, p.endTime);
+                        const sel = selId === p.id;
+                        return (
+                          <li key={p.id}>
+                            <button
+                              onClick={() => setSelId(sel ? null : p.id)}
+                              className={`flex w-full items-baseline gap-3 px-1 py-2 text-left ${sel ? 'bg-sky-50' : ''}`}
+                            >
+                              <span className="shrink-0 font-mono text-sm font-bold text-slate-700">
+                                {fmtT(p.startTime)}
+                              </span>
+                              <span className="min-w-0 flex-1 text-slate-600">{p.title}</span>
+                              {now && (
+                                <span className="shrink-0 text-xs font-bold text-green-600">ĐANG PHÁT</span>
+                              )}
+                            </button>
+                          </li>
+                        );
+                      })}
+                    </ul>
+                    {(() => {
+                      const sel = day.programs.find((p) => p.id === selId);
+                      if (sel === undefined) return null;
                       return (
-                        <li key={p.id} className={`rounded border px-2 py-1.5 text-sm ${now ? 'border-green-300 bg-green-50' : ''}`}>
+                        <div className="mt-2 flex items-stretch gap-2 border-t pt-2">
+                          <span className="min-w-0 flex-1 truncate rounded border px-2 py-1.5 font-mono text-xs text-slate-600">
+                            {fmtDT(sel.startTime)} ~ {fmtDT(sel.endTime)}
+                          </span>
                           <button
-                            onClick={() => setOpenId(open ? null : p.id)}
-                            className="flex w-full items-baseline gap-2 text-left"
+                            onClick={() => void watchProgram(sel.title, sel.startTime, sel.endTime)}
+                            className="shrink-0 rounded bg-green-500 px-4 py-1.5 text-sm font-semibold text-white"
                           >
-                            <span className="shrink-0 font-mono text-xs text-slate-500">
-                              {fmtT(p.startTime)}
-                            </span>
-                            <span className={`min-w-0 flex-1 truncate font-semibold ${open ? 'whitespace-normal' : ''}`}>
-                              {p.title}
-                            </span>
-                            {now && <span className="shrink-0 text-xs font-bold text-green-600">ĐANG PHÁT</span>}
+                            ▶ Xem
                           </button>
-                          {open && (
-                            <div className="mt-1 space-y-1.5 border-t pt-1.5">
-                              <p className="font-mono text-xs text-slate-500">
-                                {fmtT(p.startTime)} → {fmtT(p.endTime)}
-                              </p>
-                              {p.description !== '' && <p className="text-slate-600">{p.description}</p>}
-                              <div className="flex gap-2">
-                                <button
-                                  onClick={() => void watchProgram(p.title, p.startTime, p.endTime)}
-                                  className="flex-1 rounded bg-green-600 px-3 py-1.5 text-white"
-                                >
-                                  Xem lại
-                                </button>
-                                <button
-                                  onClick={() => exportProgram(p.title, p.startTime, p.endTime)}
-                                  className="flex-1 rounded bg-slate-900 px-3 py-1.5 text-white"
-                                >
-                                  Trích xuất
-                                </button>
-                              </div>
-                            </div>
-                          )}
-                        </li>
+                          <button
+                            onClick={() => exportProgram(sel.title, sel.startTime, sel.endTime)}
+                            className="shrink-0 rounded bg-sky-700 px-4 py-1.5 text-sm font-semibold text-white"
+                          >
+                            ⤓ Trích xuất
+                          </button>
+                        </div>
                       );
-                    })}
-                  </ul>
+                    })()}
+                  </>
                 )}
               </div>
             )}
