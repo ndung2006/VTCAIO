@@ -112,8 +112,8 @@ export default function ChannelsPage(): React.JSX.Element {
       });
       setMsg(
         r.published
-          ? `Đã gỡ ${r.name} khỏi danh mục VTVgo.`
-          : `Đã đưa ${r.name} lên danh mục VTVgo.`,
+          ? `Đã gỡ ${r.name} khỏi danh mục Cấp API.`
+          : `Đã đưa ${r.name} lên danh mục Cấp API.`,
       );
       await reload();
     } catch (err) {
@@ -184,7 +184,7 @@ export default function ChannelsPage(): React.JSX.Element {
                     <th>Nguồn</th>
                     <th>Live</th>
                     {isAdmin && (
-                      <th title="Tích để đưa lên danh mục VTVgo (/api/public/channels)">VTVgo</th>
+                      <th title="Tích để đưa lên danh mục Cấp API (/api/public/channels)">Cấp API</th>
                     )}
                     <th>HLS</th>
                     <th></th>
@@ -234,8 +234,8 @@ export default function ChannelsPage(): React.JSX.Element {
                             checked={r.published}
                             disabled={busy !== ''}
                             onChange={() => void togglePublish(r)}
-                            title="Tích để đưa lên danh mục VTVgo (lưu ngay, không restart)"
-                            aria-label={`Đưa ${r.name} lên VTVgo`}
+                            title="Tích để đưa lên danh mục Cấp API (lưu ngay, không restart)"
+                            aria-label={`Đưa ${r.name} lên Cấp API`}
                           />
                         </td>
                       )}
@@ -252,7 +252,7 @@ export default function ChannelsPage(): React.JSX.Element {
                           <button
                             onClick={() => void makePullLink(r)}
                             disabled={busy !== ''}
-                            title="Tạo link kéo luồng không hết hạn (giao cho đối tác/VTVgo)"
+                            title="Tạo link kéo luồng không hết hạn (giao cho đối tác)"
                             className="rounded bg-slate-200 px-3 py-1 disabled:opacity-50"
                           >
                             Link kéo

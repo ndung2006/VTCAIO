@@ -113,11 +113,11 @@ export default function AdminPage(): React.JSX.Element {
           </div>
 
           <div className="rounded-xl bg-white p-4 shadow">
-            <h2 className="mb-2 font-semibold">Tích hợp VTVgo (đối tác kéo luồng)</h2>
+            <h2 className="mb-2 font-semibold">Tích hợp Cấp API (đối tác kéo luồng)</h2>
             <p className="text-sm text-slate-600">
               Danh mục kênh máy đọc ở <code className="font-mono">/api/public/channels</code>, xác thực bằng
               header <code className="font-mono">Authorization: Bearer &lt;key&gt;</code> (key trong
-              VTC_PARTNER_KEYS ở backend). Chỉ kênh được <b>tích cột VTVgo</b> ở trang Kênh mới lên
+              VTC_PARTNER_KEYS ở backend). Chỉ kênh được <b>tích cột Cấp API</b> ở trang Kênh mới lên
               danh mục. Link kéo luồng từng kênh tạo ở trang Kênh (nút Link kéo).
             </p>
             <div className="mt-2 flex flex-wrap items-center gap-2">
@@ -143,7 +143,7 @@ export default function AdminPage(): React.JSX.Element {
             </div>
             {pubPreview !== '' && <p className="mt-2 text-sm text-slate-600">{pubPreview}</p>}
             <p className="mt-2 text-xs text-slate-500">
-              Chi tiết cho phía VTVgo: docs/14-VTVGO.md (endpoint, header, hết hạn, thu hồi).
+              Chi tiết cho phía đối tác: docs/14-VTVGO.md (endpoint, header, hết hạn, thu hồi).
             </p>
           </div>
 
