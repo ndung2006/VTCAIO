@@ -51,6 +51,8 @@ curl -s https://catchup.vtcrd.top/api/public/channels \
       "sourceId": "V1",
       "status": "RUNNING",
       "live": true,
+      "epgId": 809,
+      "epgNow": {"title": "Thời sự", "startTime": "...", "endTime": "..."},
       "hls": "https://catchup.vtcrd.top/hls/VTV1/index.m3u8?pull=9f2c..."
     }
   ]
@@ -61,6 +63,8 @@ curl -s https://catchup.vtcrd.top/api/public/channels \
 - `hls` là URL pull đầy đủ, dùng ngay cho player. Poll lại endpoint này khi đổi
   kênh (thêm/xóa/đổi secret).
 - `live:false` = kênh tắt live (không có playlist) — bỏ qua.
+- `epgId`: ID kênh phía đối tác EPG (`null` nếu chưa map); `epgNow`: chương trình
+  đang phát (`null` nếu không có lịch) — app đối tác hiện now/next không cần gọi thêm.
 
 ### POST /api/pull-tokens — cấp link kéo cho 1 kênh
 
