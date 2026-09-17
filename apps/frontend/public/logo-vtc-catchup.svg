@@ -1,0 +1,16 @@
+<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 512 512" width="512" height="512">
+  <!-- Khung băng cassette -->
+  <rect x="32" y="80" width="448" height="352" rx="40" fill="#F4F5F8" stroke="#343C4B" stroke-width="24"/>
+
+  <!-- 4 Ốc vít -->
+  <circle cx="96" cy="144" r="18" fill="#343C4B"/>
+  <circle cx="416" cy="144" r="18" fill="#343C4B"/>
+  <circle cx="96" cy="368" r="18" fill="#343C4B"/>
+  <circle cx="416" cy="368" r="18" fill="#343C4B"/>
+
+  <!-- Dải nhãn màu xanh dưới đáy -->
+  <polygon points="160,344 352,344 384,432 128,432" fill="#4B63AA" stroke="#343C4B" stroke-width="24" stroke-linejoin="round"/>
+
+  <!-- Chữ VTC (Kích thước 75%) -->
+  <text x="256" y="280" font-family="'Arial Black', Impact, 'Segoe UI Black', sans-serif" font-weight="900" font-size="160" fill="#343C4B" text-anchor="middle" letter-spacing="6">VTC</text>
+</svg>

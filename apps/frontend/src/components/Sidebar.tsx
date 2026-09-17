@@ -9,17 +9,16 @@ import { useEffect, useState } from 'react';
 import { api, type Source } from '@/lib/api';
 import { useMe } from '@/lib/role';
 
-/** Logo VTC Digital (file: apps/frontend/public/logo-vtc-digital.png). */
+/** Logo VTC Catchup (file: apps/frontend/public/logo-vtc-catchup.svg). */
 function BrandLogo(): React.JSX.Element {
   const [broken, setBroken] = useState(false);
   if (broken) return <span className="font-bold text-white">VTC Catchup</span>;
   return (
-    // Logo trắng nền trong suốt → để trực tiếp trên sidebar đen, không khung trắng.
     <span className="block px-1 py-1">
       {/* eslint-disable-next-line @next/next/no-img-element */}
       <img
-        src="/logo-vtc-digital.png"
-        alt="VTC Digital — Truyền hình số vệ tinh"
+        src="/logo-vtc-catchup.svg"
+        alt="VTC Catchup"
         className="h-10 w-auto"
         onError={() => setBroken(true)}
       />
