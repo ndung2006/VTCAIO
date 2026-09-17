@@ -961,6 +961,7 @@ export function createApi(opts: ApiOptions = {}): {
         .find((x) => x.c.name === channel);
       if (found === undefined) return send(res, 404, { error: `Kênh ${channel} không tồn tại` });
       if (scopeDeny(channelScope(req), channel, res)) return;
+      const ts0 = Date.now();
       const chunks = await exporter.resolveChunks(found.s.id, inMs, outMs);
       if (chunks.length === 0) {
         return send(res, 404, { error: 'Không có dữ liệu lưu chiểu trong khoảng đã chọn (quá retention?)' });
@@ -971,7 +972,10 @@ export function createApi(opts: ApiOptions = {}): {
         programs = await probeProgramCount(tspBin, join(captureDir, found.s.id, newest));
       } catch (e) {
         if (e instanceof TimeshiftError) return send(res, 502, { error: e.message });
-        throw e;
+        // Lưới an toàn: lỗi lạ (VD stat rớt giữa chừng) phải 500 + log, KHÔNG
+        // được để treo request (promise reject không ai bắt = client chờ vô hạn).
+        logger.warn(`timeshift ${channel}: probe/stat lạ (${Date.now() - ts0}ms): ${(e as Error)?.message ?? e}`);
+        return send(res, 500, { error: `lỗi nội bộ khi dựng lại luồng: ${(e as Error)?.message ?? 'không rõ'}` });
       }
       // MPTS: trình phát không tự chọn program — lọc SID theo yêu cầu ở
       // endpoint chunks (?sid=), SPTS giữ serve file trực tiếp (0 CPU thêm).
@@ -989,17 +993,24 @@ export function createApi(opts: ApiOptions = {}): {
                 const exp = Date.now() + 6 * 3600 * 1000;
                 return `token=${signHlsToken(channel, exp)}&exp=${exp}`;
               })();
-      const segs = await Promise.all(
-        chunks.map(async (p) => {
-          const file = p.split('/').at(-1) as string;
-          const uri =
-            `/api/timeshift/chunks?source=${encodeURIComponent(found.s.id)}` +
-            `&file=${encodeURIComponent(file)}&channel=${encodeURIComponent(channel)}` +
-            (sidFilter !== null ? `&sid=${sidFilter}` : '');
-          return { file: uri, mtimeMs: (await stat(p)).mtimeMs };
-        }),
-      );
+      let segs: { file: string; mtimeMs: number }[];
+      try {
+        segs = await Promise.all(
+          chunks.map(async (p) => {
+            const file = p.split('/').at(-1) as string;
+            const uri =
+              `/api/timeshift/chunks?source=${encodeURIComponent(found.s.id)}` +
+              `&file=${encodeURIComponent(file)}&channel=${encodeURIComponent(channel)}` +
+              (sidFilter !== null ? `&sid=${sidFilter}` : '');
+            return { file: uri, mtimeMs: (await stat(p)).mtimeMs };
+          }),
+        );
+      } catch (e) {
+        logger.warn(`timeshift ${channel}: stat chunk lạ: ${(e as Error)?.message ?? e}`);
+        return send(res, 500, { error: `lỗi nội bộ khi đọc chunk: ${(e as Error)?.message ?? 'không rõ'}` });
+      }
       const body = buildTimeshiftPlaylist(segs, query);
+      logger.info(`timeshift ${channel}: ${chunks.length} chunks, ${programs.length} program(s) (${Date.now() - ts0}ms)`);
       res.writeHead(200, {
         'content-type': 'application/vnd.apple.mpegurl',
         'cache-control': 'no-cache',
