@@ -945,6 +945,7 @@ export function createApi(opts: ApiOptions = {}): {
     // GET /api/timeshift/:channel?in=&out= — in/out ISO hoặc epoch ms.
     // Chỉ SPTS: probe PAT chunk mới nhất, >1 program → 400 "dùng Trích xuất".
     if (seg[0] === 'api' && seg[1] === 'timeshift' && seg[2] !== undefined && seg[2] !== 'chunks' && seg.length === 3 && m === 'GET') {
+      logger.info(`[ts-debug] playlist hit seg=${seg[2]}`);
       const channel = decodeURIComponent(seg[2]);
       const inMs = toMs(url.searchParams.get('inPoint') ?? url.searchParams.get('in'));
       const outMs = toMs(url.searchParams.get('outPoint') ?? url.searchParams.get('out'));
@@ -962,14 +963,18 @@ export function createApi(opts: ApiOptions = {}): {
       if (found === undefined) return send(res, 404, { error: `Kênh ${channel} không tồn tại` });
       if (scopeDeny(channelScope(req), channel, res)) return;
       const ts0 = Date.now();
+      logger.info(`[ts-debug] ${channel}: found, resolving chunks`);
       const chunks = await exporter.resolveChunks(found.s.id, inMs, outMs);
+      logger.info(`[ts-debug] ${channel}: chunks=${chunks.length} (${Date.now() - ts0}ms)`);
       if (chunks.length === 0) {
         return send(res, 404, { error: 'Không có dữ liệu lưu chiểu trong khoảng đã chọn (quá retention?)' });
       }
       let programs: number[];
       try {
         const newest = [...chunks].sort().at(-1) as string;
+        logger.info(`[ts-debug] ${channel}: probing ${newest}`);
         programs = await probeProgramCount(tspBin, join(captureDir, found.s.id, newest));
+        logger.info(`[ts-debug] ${channel}: programs=[${programs.join(',')}] (${Date.now() - ts0}ms)`);
       } catch (e) {
         if (e instanceof TimeshiftError) return send(res, 502, { error: e.message });
         // Lưới an toàn: lỗi lạ (VD stat rớt giữa chừng) phải 500 + log, KHÔNG
