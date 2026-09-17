@@ -191,7 +191,8 @@ function UsersCard(): React.JSX.Element {
   const [u, setU] = useState('');
   const [e, setE] = useState('');
   const [p, setP] = useState('');
-  const [newCh, setNewCh] = useState('');
+  const [newCh, setNewCh] = useState<string[]>([]);
+  const [newChOpen, setNewChOpen] = useState(false);
   const [expanded, setExpanded] = useState<string | null>(null);
   const [draft, setDraft] = useState<string[]>([]);
   const [saving, setSaving] = useState(false);
@@ -216,18 +217,14 @@ function UsersCard(): React.JSX.Element {
   const create = async (ev: React.FormEvent): Promise<void> => {
     ev.preventDefault();
     setMsg('');
-    const channels = newCh.split(',').map((x) => x.trim()).filter((x) => x !== '');
-    const unknown = channels.filter((x) => !allChannels.includes(x));
     try {
-      await api.adminCreateUser(u.trim(), e.trim(), p, 'user', channels);
-      setMsg(
-        `Đã tạo nhân sự ${u.trim()} (gán ${channels.length} kênh).` +
-          (unknown.length > 0 ? ` Lưu ý tên lạ chưa có trong cấu hình: ${unknown.join(', ')}.` : ''),
-      );
+      await api.adminCreateUser(u.trim(), e.trim(), p, 'user', newCh);
+      setMsg(`Đã tạo nhân sự ${u.trim()} (gán ${newCh.length} kênh).`);
       setU('');
       setE('');
       setP('');
-      setNewCh('');
+      setNewCh([]);
+      setNewChOpen(false);
       await reload();
     } catch (err) {
       setMsg(err instanceof Error ? err.message : 'Tạo thất bại');
@@ -386,12 +383,46 @@ function UsersCard(): React.JSX.Element {
           type="password"
           className="w-44 rounded border px-2 py-1.5 text-sm"
         />
-        <input
-          value={newCh}
-          onChange={(ev) => setNewCh(ev.target.value)}
-          placeholder="Kênh gán, cách nhau dấu phẩy"
-          className="w-56 rounded border px-2 py-1.5 text-sm"
-        />
+        <div className="relative">
+          <button
+            type="button"
+            onClick={() => setNewChOpen((o) => !o)}
+            className="w-56 truncate rounded border bg-white px-2 py-1.5 text-left text-sm"
+          >
+            {newCh.length === 0 ? 'Chọn kênh gán…' : `Đã chọn ${newCh.length} kênh: ${newCh.join(', ')}`}
+          </button>
+          {newChOpen && (
+            <div className="absolute z-10 mt-1 max-h-56 w-64 overflow-auto rounded border bg-white p-2 shadow-lg">
+              {allChannels.length === 0 ? (
+                <p className="text-sm text-slate-500">Chưa có kênh nào trong cấu hình.</p>
+              ) : (
+                allChannels.map((name) => (
+                  <label key={name} className="flex items-center gap-2 rounded px-1 py-1 text-sm hover:bg-slate-50">
+                    <input
+                      type="checkbox"
+                      checked={newCh.includes(name)}
+                      onChange={(ev) =>
+                        setNewCh((d) => (ev.target.checked ? [...d, name] : d.filter((x) => x !== name)))
+                      }
+                    />
+                    <span className="font-mono">{name}</span>
+                  </label>
+                ))
+              )}
+              <div className="mt-1 flex gap-2 border-t pt-1">
+                <button type="button" onClick={() => setNewCh([...allChannels])} className="text-xs text-sky-700">
+                  Chọn hết
+                </button>
+                <button type="button" onClick={() => setNewCh([])} className="text-xs text-slate-500">
+                  Bỏ hết
+                </button>
+                <button type="button" onClick={() => setNewChOpen(false)} className="ml-auto text-xs font-semibold">
+                  Xong
+                </button>
+              </div>
+            </div>
+          )}
+        </div>
         <button className="rounded bg-slate-900 px-4 py-1.5 text-sm text-white">Thêm nhân sự</button>
       </form>
       <p className="mt-2 text-xs text-slate-500">
