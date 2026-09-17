@@ -185,17 +185,28 @@ export default function AdminPage(): React.JSX.Element {
 }
 
 function UsersCard(): React.JSX.Element {
-  const [users, setUsers] = useState<{ username: string; email: string; role: string }[]>([]);
+  const [users, setUsers] = useState<{ username: string; email: string; role: string; allowedChannels: string[] }[]>([]);
+  const [allChannels, setAllChannels] = useState<string[]>([]);
   const [msg, setMsg] = useState('');
   const [u, setU] = useState('');
   const [e, setE] = useState('');
   const [p, setP] = useState('');
+  const [newCh, setNewCh] = useState('');
+  const [expanded, setExpanded] = useState<string | null>(null);
+  const [draft, setDraft] = useState<string[]>([]);
+  const [saving, setSaving] = useState(false);
 
   const reload = useCallback(async () => {
     try {
       setUsers(await api.adminUsers());
     } catch {
       setUsers([]);
+    }
+    try {
+      const srcs = await api.sources();
+      setAllChannels(srcs.flatMap((s) => s.channels.map((c) => c.name)));
+    } catch {
+      setAllChannels([]);
     }
   }, []);
   useEffect(() => {
@@ -205,15 +216,42 @@ function UsersCard(): React.JSX.Element {
   const create = async (ev: React.FormEvent): Promise<void> => {
     ev.preventDefault();
     setMsg('');
+    const channels = newCh.split(',').map((x) => x.trim()).filter((x) => x !== '');
+    const unknown = channels.filter((x) => !allChannels.includes(x));
     try {
-      await api.adminCreateUser(u.trim(), e.trim(), p, 'user');
-      setMsg(`Đã tạo nhân sự ${u.trim()} (vai xem).`);
+      await api.adminCreateUser(u.trim(), e.trim(), p, 'user', channels);
+      setMsg(
+        `Đã tạo nhân sự ${u.trim()} (gán ${channels.length} kênh).` +
+          (unknown.length > 0 ? ` Lưu ý tên lạ chưa có trong cấu hình: ${unknown.join(', ')}.` : ''),
+      );
       setU('');
       setE('');
       setP('');
+      setNewCh('');
       await reload();
     } catch (err) {
       setMsg(err instanceof Error ? err.message : 'Tạo thất bại');
+    }
+  };
+
+  const openAssign = (username: string, current: string[]): void => {
+    setExpanded(username);
+    setDraft([...current]);
+    setMsg('');
+  };
+
+  const saveAssign = async (username: string): Promise<void> => {
+    setSaving(true);
+    setMsg('');
+    try {
+      const r = await api.adminSetChannels(username, draft);
+      setMsg(`Đã gán ${r.allowedChannels.length} kênh cho ${username} (hiệu lực ngay).`);
+      setExpanded(null);
+      await reload();
+    } catch (err) {
+      setMsg(err instanceof Error ? err.message : 'Gán kênh thất bại');
+    } finally {
+      setSaving(false);
     }
   };
 
@@ -247,13 +285,30 @@ function UsersCard(): React.JSX.Element {
       <table className="w-full text-sm">
         <tbody>
           {users.map((x) => (
-            <tr key={x.username} className="border-t">
+            <tr key={x.username} className="border-t align-top">
               <td className="py-1.5 font-mono">{x.username}</td>
               <td className="text-slate-500">{x.email}</td>
-              <td>{x.role === 'admin' ? 'quản trị' : 'nhân sự'}</td>
+              <td>
+                {x.role === 'admin' ? (
+                  'quản trị'
+                ) : (
+                  <>
+                    <span>nhân sự</span>
+                    <span className="ml-1 rounded bg-slate-100 px-1.5 py-0.5 text-xs text-slate-600">
+                      {x.allowedChannels.length === 0 ? 'chưa gán kênh' : `${x.allowedChannels.length} kênh`}
+                    </span>
+                  </>
+                )}
+              </td>
               <td className="space-x-2 text-right">
                 {x.role !== 'admin' && (
                   <>
+                    <button
+                      onClick={() => (expanded === x.username ? setExpanded(null) : openAssign(x.username, x.allowedChannels))}
+                      className="rounded bg-sky-100 px-3 py-1 text-sky-800"
+                    >
+                      Kênh
+                    </button>
                     <button onClick={() => void resetPw(x.username)} className="rounded bg-slate-200 px-3 py-1">
                       Đặt lại MK
                     </button>
@@ -270,7 +325,47 @@ function UsersCard(): React.JSX.Element {
           ))}
         </tbody>
       </table>
-      <form onSubmit={create} className="mt-3 flex flex-wrap gap-2">
+      {expanded !== null && (
+        <div className="mt-2 rounded border border-sky-200 bg-sky-50 p-3">
+          <p className="mb-2 text-sm font-semibold">
+            Gán kênh cho <span className="font-mono">{expanded}</span> — chỉ kênh được tích mới xem/trích xuất được:
+          </p>
+          {allChannels.length === 0 ? (
+            <p className="text-sm text-slate-500">Chưa có kênh nào trong cấu hình.</p>
+          ) : (
+            <div className="flex flex-wrap gap-2">
+              {allChannels.map((name) => (
+                <label key={name} className="flex items-center gap-1.5 rounded bg-white px-2 py-1 text-sm shadow-sm">
+                  <input
+                    type="checkbox"
+                    checked={draft.includes(name)}
+                    onChange={(ev) =>
+                      setDraft((d) => (ev.target.checked ? [...d, name] : d.filter((x) => x !== name)))
+                    }
+                  />
+                  <span className="font-mono">{name}</span>
+                </label>
+              ))}
+            </div>
+          )}
+          <div className="mt-2 space-x-2">
+            <button
+              onClick={() => void saveAssign(expanded)}
+              disabled={saving}
+              className="rounded bg-slate-900 px-4 py-1.5 text-sm text-white disabled:opacity-50"
+            >
+              {saving ? 'Đang lưu…' : `Lưu (${draft.length} kênh)`}
+            </button>
+            <button onClick={() => setDraft([])} className="rounded bg-slate-200 px-3 py-1.5 text-sm">
+              Bỏ hết
+            </button>
+            <button onClick={() => setExpanded(null)} className="rounded px-3 py-1.5 text-sm text-slate-500">
+              Đóng
+            </button>
+          </div>
+        </div>
+      )}
+      <form onSubmit={(ev) => void create(ev)} className="mt-3 flex flex-wrap gap-2">
         <input
           value={u}
           onChange={(ev) => setU(ev.target.value)}
@@ -291,10 +386,17 @@ function UsersCard(): React.JSX.Element {
           type="password"
           className="w-44 rounded border px-2 py-1.5 text-sm"
         />
+        <input
+          value={newCh}
+          onChange={(ev) => setNewCh(ev.target.value)}
+          placeholder="Kênh gán, cách nhau dấu phẩy"
+          className="w-56 rounded border px-2 py-1.5 text-sm"
+        />
         <button className="rounded bg-slate-900 px-4 py-1.5 text-sm text-white">Thêm nhân sự</button>
       </form>
       <p className="mt-2 text-xs text-slate-500">
-        Nhân sự chỉ xem kênh, timeshift, trích xuất. Mọi cấu hình/giám sát/quản trị đều chặn 403 ở API.
+        Nhân sự chỉ xem/trích xuất đúng kênh được gán (chưa gán = không thấy kênh nào). Mọi cấu hình/giám sát/quản
+        trị đều chặn 403 ở API — gán kênh hiệu lực ngay, không cần đăng nhập lại.
       </p>
     </div>
   );

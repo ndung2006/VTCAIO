@@ -43,9 +43,26 @@ curl localhost:8080/api/sources   # → 401 unauthorized (không cookie)
 
 | Vai | Được | Cấm (403 `cần quyền quản trị`) |
 |---|---|---|
-| `admin` | Mọi thứ | — |
-| `user` (nhân sự) | Xem kênh/live/timeshift, trích xuất full (tạo/xem/tải/xóa), đổi MK chính mình | Tạo/sửa/xóa/start/stop/preview nguồn, link pull, giám sát SSE, GC/HLS-health/notify/backup-restore/EPG-sync, quản trị users |
+| `admin` | Mọi thứ (mọi kênh) | — |
+| `user` (nhân sự) | Xem/trích xuất/timeshift/EPG **đúng kênh được gán**, đổi MK chính mình | Tạo/sửa/xóa/start/stop/preview nguồn, link pull, giám sát SSE, GC/HLS-health/notify/backup-restore/EPG-sync, tra cứu ID EPG đối tác, quản trị users |
 | partner key (Bearer) | Full quyền service (máy-gọi-máy) | — |
+
+## Gán kênh cho nhân sự (`allowedChannels`)
+
+- Mỗi nhân sự có danh sách kênh được gán (mặc định rỗng = **không thấy kênh nào**).
+  Admin gán lúc tạo user hoặc sau này: `PUT /api/admin/users/:u/channels {channels:
+  [...]}` (ghi đè, hiệu lực ngay không cần đăng nhập lại).
+- Mọi API theo kênh đều chặn theo scope (`channelScope`/`scopeDeny` trong
+  `server.ts`): `GET /api/sources` (lọc kênh, ẩn source hết kênh thấy), `GET
+  /api/sources/:id`, `POST /api/hls-tokens`, submit/list/get/download/delete
+  exports, playlist timeshift, `GET /api/epg/schedule`, `GET /api/epg/status`
+  (chỉ mapping/unmapped trong scope). Kênh ngoài scope → 403.
+- Link xem cấp ra (token/pull) đã bind tên kênh nên chunk timeshift kế thừa scope
+  từ lúc mint — không cần check thêm. **Lưu ý:** token HLS đã cấp (tối đa 4 giờ)
+  vẫn xem được kênh cũ sau khi bị thu hồi gán; cần đá ngay thì đổi
+  `VTC_HLS_SECRET` (+ restart backend FE không cache token).
+- Phân biệt với `published`: `published` = kênh có lên danh mục VTVgo kéo luồng
+  không; `allowedChannels` = nhân sự nào được xem kênh nào. Hai lớp độc lập.
 
 - Role nằm trong JWT + tra store mỗi request (đổi role/xóa user hiệu lực ngay,
   không chờ token 7 ngày hết hạn).

@@ -5,8 +5,14 @@ import { useEffect, useState } from 'react';
 import Link from 'next/link';
 import { api } from './api';
 
-export function useMe(): { username: string; role: string } | null | undefined {
-  const [me, setMe] = useState<{ username: string; role: string } | null | undefined>(undefined);
+export interface Me {
+  username: string;
+  role: string;
+  allowedChannels?: string[];
+}
+
+export function useMe(): Me | null | undefined {
+  const [me, setMe] = useState<Me | null | undefined>(undefined);
   useEffect(() => {
     api
       .me()

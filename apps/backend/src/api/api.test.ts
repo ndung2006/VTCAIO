@@ -767,13 +767,20 @@ describe('API', { concurrency: false }, () => {
   });
 
   it('phân quyền: operator xem/trích xuất được, cấu hình/giám sát/admin thì 403', async () => {
-    // Admin tạo nhân sự.
+    // Admin tạo nhân sự (gán cả 2 kênh demo để test flow cũ; test giới hạn kênh riêng ở dưới).
     let r = await req('/api/admin/users', {
       method: 'POST',
       headers: { 'content-type': 'application/json' },
-      body: JSON.stringify({ username: 'op1', email: 'op1@x.y', password: 'pass-1234', role: 'user' }),
+      body: JSON.stringify({
+        username: 'op1',
+        email: 'op1@x.y',
+        password: 'pass-1234',
+        role: 'user',
+        allowedChannels: ['demo4', 'demo5'],
+      }),
     });
     assert.equal(r.status, 201);
+    assert.deepEqual(((await r.json()) as { allowedChannels: string[] }).allowedChannels, ['demo4', 'demo5']);
     r = await req('/api/admin/users', {
       method: 'POST',
       headers: { 'content-type': 'application/json' },
@@ -840,6 +847,7 @@ describe('API', { concurrency: false }, () => {
       ['/api/admin/config-backup'],
       ['/api/admin/users'],
       ['/api/admin/epg-sync', { method: 'POST', headers: { 'content-type': 'application/json' }, body: '{}' }],
+      ['/api/epg/partner-channels?search=VTV'],
     ];
     for (const [path, init] of forb) {
       const rr = await op(path, init);
@@ -861,6 +869,191 @@ describe('API', { concurrency: false }, () => {
       body: JSON.stringify({ username: 'op1', password: 'pass-1234' }),
     });
     assert.equal(relogin.status, 401);
+  });
+
+  it('giới hạn kênh: nhân sự chỉ thấy/xem/trích xuất kênh được gán', async () => {
+    // Gán opCh duy nhất demo4.
+    let r = await req('/api/admin/users', {
+      method: 'POST',
+      headers: { 'content-type': 'application/json' },
+      body: JSON.stringify({
+        username: 'opch',
+        email: 'opch@x.y',
+        password: 'pass-1234',
+        role: 'user',
+        allowedChannels: ['demo4'],
+      }),
+    });
+    assert.equal(r.status, 201);
+    r = await req('/api/admin/users', {
+      method: 'POST',
+      headers: { 'content-type': 'application/json' },
+      body: JSON.stringify({
+        username: 'opbad',
+        email: 'opbad@x.y',
+        password: 'pass-1234',
+        role: 'user',
+        allowedChannels: 'demo4',
+      }),
+    });
+    assert.equal(r.status, 400); // allowedChannels sai kiểu
+
+    const login = await fetch(`${base}/api/auth/login`, {
+      method: 'POST',
+      headers: { 'content-type': 'application/json' },
+      body: JSON.stringify({ username: 'opch', password: 'pass-1234' }),
+    });
+    assert.equal(login.status, 200);
+    const chCk = (login.headers.get('set-cookie') ?? '').split(';')[0] ?? '';
+    const ch = (path: string, init?: RequestInit): Promise<Response> =>
+      fetch(`${base}${path}`, { ...init, headers: { ...(init?.headers ?? {}), cookie: chCk } });
+
+    r = await ch('/api/auth/me');
+    assert.deepEqual(((await r.json()) as { allowedChannels: string[] }).allowedChannels, ['demo4']);
+
+    // Danh mục: chỉ thấy demo4, demo5 biến mất.
+    r = await ch('/api/sources');
+    assert.equal(r.status, 200);
+    const srcs = (await r.json()) as { id: string; channels: { name: string }[] }[];
+    const api1 = srcs.find((s) => s.id === 'API1');
+    assert.ok(api1 !== undefined);
+    assert.deepEqual(api1.channels.map((c) => c.name), ['demo4']);
+    r = await ch('/api/sources/API1');
+    assert.equal(r.status, 200);
+    assert.deepEqual(
+      ((await r.json()) as { channels: { name: string }[] }).channels.map((c) => c.name),
+      ['demo4'],
+    );
+
+    // Mint: demo4 được, demo5 403.
+    r = await ch('/api/hls-tokens', {
+      method: 'POST',
+      headers: { 'content-type': 'application/json' },
+      body: JSON.stringify({ channel: 'demo4' }),
+    });
+    assert.equal(r.status, 200);
+    r = await ch('/api/hls-tokens', {
+      method: 'POST',
+      headers: { 'content-type': 'application/json' },
+      body: JSON.stringify({ channel: 'demo5' }),
+    });
+    assert.equal(r.status, 403);
+
+    // Trích xuất: submit demo5 403; submit demo4 200 (dùng chunk S1 có sẵn).
+    const now = Date.now();
+    const sub = (channelName: string): Promise<Response> =>
+      ch('/api/exports', {
+        method: 'POST',
+        headers: { 'content-type': 'application/json' },
+        body: JSON.stringify({
+          channelName,
+          sourceId: 'S1',
+          serviceId: 4,
+          inPoint: new Date(now - 120_000).toISOString(),
+          outPoint: new Date(now).toISOString(),
+        }),
+      });
+    assert.equal((await sub('demo5')).status, 403);
+    r = await sub('demo4');
+    assert.equal(r.status, 200);
+    const myJob = (await r.json()) as { id: string };
+    // Lịch sử chỉ chứa kênh được gán.
+    r = await ch('/api/exports');
+    const mine = (await r.json()) as { id: string; channelName: string }[];
+    assert.ok(mine.length >= 1 && mine.every((j) => j.channelName === 'demo4'));
+    assert.equal((await ch(`/api/exports/${myJob.id}`)).status, 200);
+    // Job kênh khác (admin tạo hộ): đọc/xóa đều 403.
+    r = await req('/api/exports', {
+      method: 'POST',
+      headers: { 'content-type': 'application/json' },
+      body: JSON.stringify({
+        channelName: 'demo5',
+        sourceId: 'S1',
+        serviceId: 4,
+        inPoint: new Date(now - 120_000).toISOString(),
+        outPoint: new Date(now).toISOString(),
+      }),
+    });
+    assert.equal(r.status, 200);
+    const otherJob = (await r.json()) as { id: string };
+    try {
+      assert.equal((await ch(`/api/exports/${otherJob.id}`)).status, 403);
+      assert.equal((await ch(`/api/exports/${otherJob.id}/download`)).status, 403);
+      assert.equal((await ch(`/api/exports/${otherJob.id}`, { method: 'DELETE' })).status, 403);
+    } finally {
+      await req(`/api/exports/${otherJob.id}`, { method: 'DELETE' });
+    }
+
+    // Timeshift: demo5 403 (chặn trước khi chạm đĩa); demo4 qua scope (404 do API1 chưa có chunk).
+    const ts = (chName: string): Promise<Response> =>
+      ch(`/api/timeshift/${chName}?in=${new Date(now - 120_000).toISOString()}&out=${new Date(now).toISOString()}`);
+    assert.equal((await ts('demo5')).status, 403);
+    assert.equal((await ts('demo4')).status, 404);
+
+    // EPG schedule theo scope: map cả 2 kênh rồi sync.
+    process.env['VTC_EPG_API_KEY'] = 'K-TEST';
+    try {
+      r = await req('/api/sources/API1', {
+        method: 'PUT',
+        headers: { 'content-type': 'application/json' },
+        body: JSON.stringify({
+          channels: [
+            { name: 'demo4', serviceId: 4, isLive: true, published: true, partnerChannelId: 809 },
+            { name: 'demo5', serviceId: 5, isLive: true, partnerChannelId: 810 },
+          ],
+        }),
+      });
+      assert.equal(r.status, 200);
+      r = await req('/api/admin/epg-sync', {
+        method: 'POST',
+        headers: { 'content-type': 'application/json' },
+        body: '{}',
+      });
+      assert.equal(r.status, 200);
+      const { vnToday } = await import('../epg/sync.js');
+      const today = vnToday();
+      assert.equal((await ch(`/api/epg/schedule?channel=demo4&date=${today}`)).status, 200);
+      assert.equal((await ch(`/api/epg/schedule?channel=demo5&date=${today}`)).status, 403);
+      r = await ch('/api/epg/status');
+      const st = (await r.json()) as { mappings: { localName: string }[] };
+      assert.deepEqual(st.mappings.map((x) => x.localName), ['demo4']);
+      // Gán kênh: sai kiểu 400, user lạ 404; gán rỗng = thu hồi hết.
+      r = await req('/api/admin/users/opch/channels', {
+        method: 'PUT',
+        headers: { 'content-type': 'application/json' },
+        body: JSON.stringify({ channels: 'x' }),
+      });
+      assert.equal(r.status, 400);
+      r = await req('/api/admin/users/khongco/channels', {
+        method: 'PUT',
+        headers: { 'content-type': 'application/json' },
+        body: JSON.stringify({ channels: [] }),
+      });
+      assert.equal(r.status, 404);
+      r = await req('/api/admin/users/opch/channels', {
+        method: 'PUT',
+        headers: { 'content-type': 'application/json' },
+        body: JSON.stringify({ channels: [] }),
+      });
+      assert.equal(r.status, 200);
+      assert.equal((await ch('/api/sources')).status, 200);
+      assert.deepEqual(await (await ch('/api/sources')).json(), []);
+    } finally {
+      delete process.env['VTC_EPG_API_KEY'];
+      // Khôi phục mapping API1 như cũ.
+      await req('/api/sources/API1', {
+        method: 'PUT',
+        headers: { 'content-type': 'application/json' },
+        body: JSON.stringify({
+          channels: [
+            { name: 'demo4', serviceId: 4, isLive: true, published: true },
+            { name: 'demo5', serviceId: 5, isLive: true },
+          ],
+        }),
+      });
+      await req(`/api/exports/${myJob.id}`, { method: 'DELETE' });
+      await req('/api/admin/users/opch', { method: 'DELETE' });
+    }
   });
 
   it('SSE cần auth + trả event', async () => {

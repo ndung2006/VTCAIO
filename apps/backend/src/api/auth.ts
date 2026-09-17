@@ -25,6 +25,8 @@ export interface UserRecord {
   email: string;
   passwordHash: string;
   role: string;
+  /** Kênh được gán cho nhân sự (role user). undefined/[] = không kênh nào. */
+  allowedChannels?: string[];
   resetToken?: string;
   resetExpires?: number; // epoch ms
 }

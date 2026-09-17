@@ -204,6 +204,24 @@ function toMs(v: unknown): number {
 }
 
 /**
+ * Chuẩn hóa danh sách kênh gán cho nhân sự: undefined (không gửi) → [];
+ * mảng string (trim, bỏ rỗng, tối đa 200) → danh sách; còn lại → null (400).
+ * Không validate tồn tại (kênh có thể đổi tên sau) — tên lạ bị lọc lặng khi đọc.
+ */
+function parseChannelList(v: unknown): string[] | null {
+  if (v === undefined) return [];
+  if (!Array.isArray(v) || v.length > 200) return null;
+  const out: string[] = [];
+  for (const x of v) {
+    if (typeof x !== 'string') return null;
+    const t = x.trim();
+    if (t === '') return null;
+    if (!out.includes(t)) out.push(t);
+  }
+  return out;
+}
+
+/**
  * verifyAuth: JWT trong HttpOnly Cookie, HOẶC Bearer partner key
  * (VTC_PARTNER_KEYS, cho máy-gọi-máy như VTVgo — full quyền, giữ kín như pass).
  * Gắn trước mọi API nghiệp vụ — chặn spawn/chạm đĩa khi 401.
@@ -393,6 +411,31 @@ export function createApi(opts: ApiOptions = {}): {
     if (me.startsWith('partner:')) return true;
     return store.findUser(me)?.role === 'admin';
   }
+  /**
+   * Phạm vi kênh của request: 'all' (admin/partner) hoặc danh sách tên kênh
+   * được gán (nhân sự, rỗng = không kênh nào). null = chưa login.
+   */
+  function channelScope(req: IncomingMessage): string[] | 'all' | null {
+    const me = requireAuth(req);
+    if (me === null) return null;
+    if (me.startsWith('partner:')) return 'all';
+    const u = store.findUser(me);
+    if (u === undefined) return null;
+    if (u.role === 'admin') return 'all';
+    return u.allowedChannels ?? [];
+  }
+  /** true = đã chặn response (401/403), caller return luôn. */
+  function scopeDeny(scope: string[] | 'all' | null, channel: string, res: ServerResponse): boolean {
+    if (scope === null) {
+      send(res, 401, { error: 'unauthorized' });
+      return true;
+    }
+    if (scope !== 'all' && !scope.includes(channel)) {
+      send(res, 403, { error: `kênh ${channel === '' ? '(trống)' : channel} không thuộc phạm vi được gán` });
+      return true;
+    }
+    return false;
+  }
 
   // Seed admin lúc boot (in-memory; Phase 2b chuyển vào DB + migration).
   const adminUser = opts.adminUser ?? process.env['VTC_ADMIN_USER'] ?? 'admin';
@@ -457,10 +500,10 @@ export function createApi(opts: ApiOptions = {}): {
       if (m === 'GET' && seg[2] === 'me' && seg.length === 3) {
         const me = requireAuth(req);
         if (me === null) return send(res, 401, { error: 'unauthorized' });
-        if (me.startsWith('partner:')) return send(res, 200, { username: me, role: 'admin' });
+        if (me.startsWith('partner:')) return send(res, 200, { username: me, role: 'admin', allowedChannels: [] });
         const user = store.findUser(me);
         if (user === undefined) return send(res, 401, { error: 'unauthorized' });
-        send(res, 200, { username: user.username, role: user.role });
+        send(res, 200, { username: user.username, role: user.role, allowedChannels: user.allowedChannels ?? [] });
         return;
       }
       // POST /api/auth/change-password (cần login)
@@ -654,6 +697,7 @@ export function createApi(opts: ApiOptions = {}): {
       const channel = typeof b.channel === 'string' ? b.channel : '';
       const known = store.listSources().some((s) => s.channels.some((c) => c.name === channel));
       if (!known) return send(res, 404, { error: `Kênh ${channel} không tồn tại` });
+      if (scopeDeny(channelScope(req), channel, res)) return;
       const exp = Date.now() + clampHlsTtl(b.ttlMinutes) * 60_000;
       const token = signHlsToken(channel, exp);
       const enc = encodeURIComponent(channel);
@@ -723,7 +767,7 @@ export function createApi(opts: ApiOptions = {}): {
       send(res, 200, store.listPublicUsers());
       return;
     }
-    // POST /api/admin/users {username, email, password, role} — tạo nhân sự.
+    // POST /api/admin/users {username, email, password, role, allowedChannels?} — tạo nhân sự.
     if (seg[0] === 'api' && seg[1] === 'admin' && seg[2] === 'users' && seg.length === 3 && m === 'POST') {
       if (!isAdminReq(req)) return send(res, 403, { error: FORBIDDEN });
       const b = (await readJson(req)) as {
@@ -731,6 +775,7 @@ export function createApi(opts: ApiOptions = {}): {
         email?: unknown;
         password?: unknown;
         role?: unknown;
+        allowedChannels?: unknown;
       };
       const username = typeof b.username === 'string' ? b.username.trim() : '';
       const email = typeof b.email === 'string' ? b.email.trim() : '';
@@ -742,14 +787,16 @@ export function createApi(opts: ApiOptions = {}): {
       if (typeof b.password !== 'string' || b.password.length < 8) {
         return send(res, 400, { error: 'mật khẩu tối thiểu 8 ký tự' });
       }
+      const channels = parseChannelList(b.allowedChannels);
+      if (channels === null) return send(res, 400, { error: 'allowedChannels phải là mảng tên kênh' });
       try {
-        store.createUser({ username, email, passwordHash: await hashPassword(b.password), role });
+        store.createUser({ username, email, passwordHash: await hashPassword(b.password), role, allowedChannels: channels });
       } catch (e) {
         if (e instanceof Error) return send(res, 400, { error: e.message });
         throw e;
       }
-      logger.info(`tạo user ${username} (role ${role})`);
-      send(res, 201, { username, email, role });
+      logger.info(`tạo user ${username} (role ${role}, kênh ${channels.length})`);
+      send(res, 201, { username, email, role, allowedChannels: channels });
       return;
     }
     // DELETE /api/admin/users/:username — cấm tự xóa chính mình.
@@ -791,11 +838,39 @@ export function createApi(opts: ApiOptions = {}): {
       send(res, 200, { ok: true });
       return;
     }
+    // PUT /api/admin/users/:username/channels {channels: string[]} — gán kênh cho nhân sự (ghi đè).
+    if (
+      seg[0] === 'api' &&
+      seg[1] === 'admin' &&
+      seg[2] === 'users' &&
+      seg.length === 5 &&
+      seg[4] === 'channels' &&
+      m === 'PUT'
+    ) {
+      if (!isAdminReq(req)) return send(res, 403, { error: FORBIDDEN });
+      const target = decodeURIComponent(seg[3] ?? '');
+      const b = (await readJson(req)) as { channels?: unknown };
+      const channels = parseChannelList(b.channels);
+      if (channels === null) return send(res, 400, { error: 'channels phải là mảng tên kênh' });
+      try {
+        store.setAllowedChannels(target, channels);
+      } catch (e) {
+        if (e instanceof Error) return send(res, 404, { error: e.message });
+        throw e;
+      }
+      logger.info(`gán ${channels.length} kênh cho user ${target}`);
+      send(res, 200, { username: target, allowedChannels: channels });
+      return;
+    }
 
     //-- EPG đối tác (đã qua gate) ----------------------------------------------
     // GET /api/epg/status — mapping local<->đối tác + ngày đã có + lần sync cuối.
+    // Nhân sự chỉ thấy mapping/unmapped của kênh được gán.
     if (seg[0] === 'api' && seg[1] === 'epg' && seg[2] === 'status' && seg.length === 3 && m === 'GET') {
-      const mappings = epgMappings();
+      const scope = channelScope(req);
+      if (scope === null) return send(res, 401, { error: 'unauthorized' });
+      const inScope = (name: string): boolean => scope === 'all' || scope.includes(name);
+      const mappings = epgMappings().filter((x) => inScope(x.localName));
       const partnerIds = [...new Set(mappings.map((x) => x.partnerChannelId))];
       send(res, 200, {
         configured: epgClient.configured,
@@ -804,13 +879,16 @@ export function createApi(opts: ApiOptions = {}): {
         mappings: mappings.map((x) => ({ ...x, dates: epgStore.datesOf(x.partnerChannelId) })),
         unmappedLocal: store
           .listSources()
-          .flatMap((s) => s.channels.filter((c) => c.partnerChannelId == null).map((c) => ({ name: c.name, sourceId: s.id }))),
+          .flatMap((s) =>
+            s.channels.filter((c) => c.partnerChannelId == null && inScope(c.name)).map((c) => ({ name: c.name, sourceId: s.id })),
+          ),
         partnerTotal: partnerIds.length,
       });
       return;
     }
-    // GET /api/epg/partner-channels?search=&page= — tra cứu ID đối tác để map.
+    // GET /api/epg/partner-channels?search=&page= — tra cứu ID đối tác để map (chỉ admin: công cụ cấu hình).
     if (seg[0] === 'api' && seg[1] === 'epg' && seg[2] === 'partner-channels' && seg.length === 3 && m === 'GET') {
+      if (!isAdminReq(req)) return send(res, 403, { error: FORBIDDEN });
       try {
         const page = Number(url.searchParams.get('page') ?? 0);
         const limit = Number(url.searchParams.get('limit') ?? 20);
@@ -843,6 +921,7 @@ export function createApi(opts: ApiOptions = {}): {
       if (!/^\d{4}-\d{2}-\d{2}$/.test(date)) return send(res, 400, { error: 'date phải YYYY-MM-DD' });
       const map = epgMappings().find((x) => x.localName === localName);
       if (map === undefined) return send(res, 404, { error: `Kênh ${localName} chưa map ID EPG đối tác` });
+      if (scopeDeny(channelScope(req), localName, res)) return;
       const day = epgStore.getDay(map.partnerChannelId, date);
       if (day === undefined) {
         return send(res, 404, { error: `Chưa có lịch đã duyệt của ${localName} ngày ${date}` });
@@ -870,6 +949,7 @@ export function createApi(opts: ApiOptions = {}): {
         .flatMap((s) => s.channels.map((c) => ({ s, c })))
         .find((x) => x.c.name === channel);
       if (found === undefined) return send(res, 404, { error: `Kênh ${channel} không tồn tại` });
+      if (scopeDeny(channelScope(req), channel, res)) return;
       const chunks = await exporter.resolveChunks(found.s.id, inMs, outMs);
       if (chunks.length === 0) {
         return send(res, 404, { error: 'Không có dữ liệu lưu chiểu trong khoảng đã chọn (quá retention?)' });
@@ -952,7 +1032,11 @@ export function createApi(opts: ApiOptions = {}): {
     // ISO string hoặc epoch ms. Trả 200 + job ngay (async, PRD §6.C).
     if (seg[0] === 'api' && seg[1] === 'exports' && seg.length === 2) {
       if (m === 'GET') {
-        send(res, 200, exporter.list());
+        // Nhân sự chỉ thấy tác vụ của kênh được gán.
+        const scope = channelScope(req);
+        if (scope === null) return send(res, 401, { error: 'unauthorized' });
+        const jobs = scope === 'all' ? exporter.list() : exporter.list().filter((j) => scope.includes(j.channelName));
+        send(res, 200, jobs);
         return;
       }
       if (m === 'POST') {
@@ -963,9 +1047,11 @@ export function createApi(opts: ApiOptions = {}): {
           inPoint?: unknown;
           outPoint?: unknown;
         };
+        const channelName = typeof b.channelName === 'string' ? b.channelName : '';
+        if (channelName !== '' && scopeDeny(channelScope(req), channelName, res)) return;
         try {
           const job = await exporter.submit({
-            channelName: typeof b.channelName === 'string' ? b.channelName : '',
+            channelName,
             sourceId: typeof b.sourceId === 'string' ? b.sourceId : '',
             serviceId: typeof b.serviceId === 'number' ? b.serviceId : NaN,
             inPoint: toMs(b.inPoint),
@@ -986,6 +1072,7 @@ export function createApi(opts: ApiOptions = {}): {
       if (m === 'GET' && seg[3] === 'download') {
         const job = exporter.get(expId);
         if (job === undefined) return send(res, 404, { error: `Tác vụ ${expId} không tồn tại` });
+        if (scopeDeny(channelScope(req), job.channelName, res)) return;
         if (job.status !== 'SUCCESS') {
           return send(res, 409, { error: `Tác vụ đang ${job.status} — chưa thể tải` });
         }
@@ -1009,11 +1096,14 @@ export function createApi(opts: ApiOptions = {}): {
       if (m === 'GET' && seg.length === 3) {
         const job = exporter.get(expId);
         if (job === undefined) return send(res, 404, { error: `Tác vụ ${expId} không tồn tại` });
+        if (scopeDeny(channelScope(req), job.channelName, res)) return;
         send(res, 200, job);
         return;
       }
       // DELETE /api/exports/:id — xóa file vật lý trước, record sau.
       if (m === 'DELETE' && seg.length === 3) {
+        const job = exporter.get(expId);
+        if (job !== undefined && scopeDeny(channelScope(req), job.channelName, res)) return;
         try {
           await exporter.remove(expId);
         } catch (e) {
@@ -1029,7 +1119,17 @@ export function createApi(opts: ApiOptions = {}): {
       const id = seg[2] === undefined ? undefined : decodeURIComponent(seg[2]);
 
       if (m === 'GET' && id === undefined) {
-        send(res, 200, store.listSources());
+        // Nhân sự chỉ thấy kênh được gán (source hết kênh hiển thị bị ẩn luôn).
+        const scope = channelScope(req);
+        if (scope === null) return send(res, 401, { error: 'unauthorized' });
+        const list =
+          scope === 'all'
+            ? store.listSources()
+            : store
+                .listSources()
+                .map((s) => ({ ...s, channels: s.channels.filter((c) => scope.includes(c.name)) }))
+                .filter((s) => s.channels.length > 0);
+        send(res, 200, list);
         return;
       }
       if (m === 'POST' && id === undefined) {
@@ -1055,7 +1155,12 @@ export function createApi(opts: ApiOptions = {}): {
         if (m === 'GET') {
           const r = store.getSource(id);
           if (r === undefined) return send(res, 404, { error: `Source ${id} không tồn tại` });
-          return send(res, 200, r);
+          const scope = channelScope(req);
+          if (scope === null) return send(res, 401, { error: 'unauthorized' });
+          if (scope === 'all') return send(res, 200, r);
+          const visible = r.channels.filter((c) => scope.includes(c.name));
+          if (visible.length === 0) return send(res, 403, { error: 'source này không có kênh nào thuộc phạm vi được gán' });
+          return send(res, 200, { ...r, channels: visible });
         }
         if (m === 'PUT') {
           if (!isAdminReq(req)) return send(res, 403, { error: FORBIDDEN });

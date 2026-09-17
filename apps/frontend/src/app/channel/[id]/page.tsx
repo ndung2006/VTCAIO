@@ -12,6 +12,7 @@ import { Header } from '@/components/Header';
 import { LivePlayer } from '@/components/LivePlayer';
 import { CopyButton } from '@/components/CopyButton';
 import { api, timeshiftUrl, type EpgDayView } from '@/lib/api';
+import { useMe } from '@/lib/role';
 
 function fmtT(iso: string): string {
   const d = new Date(iso);
@@ -22,6 +23,7 @@ function fmtT(iso: string): string {
 export default function ChannelPage({ params }: { params: { id: string } }): React.JSX.Element {
   const name = decodeURIComponent(params.id);
   const router = useRouter();
+  const me = useMe();
   const [found, setFound] = useState<boolean | null>(null);
   const [link, setLink] = useState('');
   const [linkErr, setLinkErr] = useState('');
@@ -169,9 +171,14 @@ export default function ChannelPage({ params }: { params: { id: string } }): Rea
             Link có hạn dùng 4 giờ — hết hạn thì trình phát tự cấp lại, link đã copy đi thì hết hiệu lực.
           </p>
           {linkErr !== '' && <p className="text-sm text-red-600">{linkErr}</p>}
-          {found === false && (
-            <p className="text-sm text-amber-600">Kênh chưa có trong cấu hình — kiểm tra /sources.</p>
-          )}
+          {found === false &&
+            (me !== null && me !== undefined && me.role !== 'admin' ? (
+              <p className="text-sm text-amber-600">
+                Kênh này không thuộc phạm vi được gán cho bạn — liên hệ quản trị để được gán thêm.
+              </p>
+            ) : (
+              <p className="text-sm text-amber-600">Kênh chưa có trong cấu hình — kiểm tra /sources.</p>
+            ))}
           {msg !== '' && <p className="rounded bg-amber-50 px-3 py-2 text-sm text-slate-700">{msg}</p>}
 
           {vod === null ? (

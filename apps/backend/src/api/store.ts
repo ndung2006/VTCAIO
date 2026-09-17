@@ -149,8 +149,20 @@ export class Store {
   }
 
   /** Danh sách công khai (KHÔNG hash/token) cho trang quản trị. */
-  listPublicUsers(): { username: string; email: string; role: string }[] {
-    return [...this.users.values()].map((u) => ({ username: u.username, email: u.email, role: u.role }));
+  listPublicUsers(): { username: string; email: string; role: string; allowedChannels: string[] }[] {
+    return [...this.users.values()].map((u) => ({
+      username: u.username,
+      email: u.email,
+      role: u.role,
+      allowedChannels: u.allowedChannels ?? [],
+    }));
+  }
+
+  /** Gán kênh cho nhân sự (ghi đè danh sách). */
+  setAllowedChannels(username: string, channels: string[]): void {
+    const u = this.users.get(username);
+    if (u === undefined) throw new Error(`Người dùng ${username} không tồn tại`);
+    u.allowedChannels = [...channels];
   }
 
   findUser(username: string): UserRecord | undefined {

@@ -127,19 +127,26 @@ export const api = {
     fetch('/api/auth/logout', { method: 'POST', credentials: 'include' }).then((r) => json<{ ok: boolean }>(r)),
   me: () =>
     fetch('/api/auth/me', { credentials: 'include' }).then((r) =>
-      json<{ username: string; role: string }>(r),
+      json<{ username: string; role: string; allowedChannels?: string[] }>(r),
     ),
   adminUsers: () =>
     fetch('/api/admin/users', { credentials: 'include' }).then((r) =>
-      json<{ username: string; email: string; role: string }[]>(r),
+      json<{ username: string; email: string; role: string; allowedChannels: string[] }[]>(r),
     ),
-  adminCreateUser: (username: string, email: string, password: string, role: string) =>
+  adminCreateUser: (username: string, email: string, password: string, role: string, allowedChannels?: string[]) =>
     fetch('/api/admin/users', {
       method: 'POST',
       credentials: 'include',
       headers: { 'content-type': 'application/json' },
-      body: JSON.stringify({ username, email, password, role }),
-    }).then((r) => json<{ username: string; email: string; role: string }>(r)),
+      body: JSON.stringify({ username, email, password, role, allowedChannels: allowedChannels ?? [] }),
+    }).then((r) => json<{ username: string; email: string; role: string; allowedChannels: string[] }>(r)),
+  adminSetChannels: (username: string, channels: string[]) =>
+    fetch(`/api/admin/users/${encodeURIComponent(username)}/channels`, {
+      method: 'PUT',
+      credentials: 'include',
+      headers: { 'content-type': 'application/json' },
+      body: JSON.stringify({ channels }),
+    }).then((r) => json<{ username: string; allowedChannels: string[] }>(r)),
   adminDeleteUser: (username: string) =>
     fetch(`/api/admin/users/${encodeURIComponent(username)}`, { method: 'DELETE', credentials: 'include' }).then(
       (r) => json<{ ok: boolean }>(r),
