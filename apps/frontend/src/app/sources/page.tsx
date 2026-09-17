@@ -114,7 +114,9 @@ export default function SourcesPage(): React.JSX.Element {
       setScanMsg(
         r.programs.length === 0
           ? 'Không thấy chương trình nào — kiểm tra input đúng nhóm multicast đang có tín hiệu.'
-          : `Thấy ${r.programs.length} chương trình (${(r.elapsedMs / 1000).toFixed(1)}s). Tích chọn rồi bấm "Thêm kênh đã chọn".`,
+          : `Thấy ${r.programs.length} chương trình (${(r.elapsedMs / 1000).toFixed(1)}s) — luồng ` +
+            `${r.programs.length === 1 ? 'đơn chương trình (SPTS)' : 'đa chương trình (MPTS)'}. ` +
+            `Tích chọn rồi bấm "Thêm kênh đã chọn".`,
       );
     } catch (err) {
       setScanProgs([]);
@@ -360,7 +362,7 @@ export default function SourcesPage(): React.JSX.Element {
               <p className="text-sm text-slate-500">
                 {s.recordAll ? (
                   <>
-                    Ghi catchup toàn MPTS · Lưu {s.retentionDays ?? 'mặc định'} ngày
+                    Ghi catchup toàn luồng · Lưu {s.retentionDays ?? 'mặc định'} ngày
                   </>
                 ) : (
                   'Chỉ live — không lưu chiểu (xem trực tiếp bình thường, trích xuất/timeshift báo không có dữ liệu)'
@@ -457,7 +459,7 @@ export default function SourcesPage(): React.JSX.Element {
               )}
               <label className="flex items-center gap-2 text-sm">
                 <input type="checkbox" checked={fRecordAll} onChange={(e) => setFRecordAll(e.target.checked)} />
-                Ghi catchup toàn bộ MPTS ra đĩa (khuyên bật)
+                Ghi catchup toàn bộ luồng ra đĩa (khuyên bật)
               </label>
               {!fRecordAll && (
                 <p className="text-sm text-amber-600">

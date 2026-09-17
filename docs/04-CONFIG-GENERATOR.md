@@ -47,7 +47,7 @@ Chặn sẵn case vô nghĩa (0 live + record_all=0 → chỉ còn `-O drop`) v�
 
 ## Kênh chỉ live (không lưu chiểu) + Quét luồng lấy SID
 
-- **Chỉ live:** tắt "Ghi catchup toàn bộ MPTS ra đĩa" (`recordAll=false`) — conf còn
+- **Chỉ live:** tắt "Ghi catchup toàn bộ luồng ra đĩa" (`recordAll=false`) — conf còn
   đúng các nhánh fork HLS trên RAMDisk + `-O drop`, xem trực tiếp bình thường,
   không tốn 1 byte ổ HDD. Ô "Số ngày lưu chiểu" tự mờ + không gửi. Trích
   xuất/timeshift kênh này báo không có dữ liệu (đúng bản chất, không phải lỗi).
