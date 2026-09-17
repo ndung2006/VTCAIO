@@ -14,7 +14,7 @@ function BrandLogo(): React.JSX.Element {
   const [broken, setBroken] = useState(false);
   if (broken) return <span className="font-bold text-white">VTC Catchup</span>;
   return (
-    <span className="block px-1 py-1">
+    <span className="flex items-center gap-2 px-1 py-1">
       {/* eslint-disable-next-line @next/next/no-img-element */}
       <img
         src="/logo-vtc-catchup.svg"
@@ -22,6 +22,7 @@ function BrandLogo(): React.JSX.Element {
         className="h-10 w-auto"
         onError={() => setBroken(true)}
       />
+      <span className="text-lg font-bold text-red-600">LƯU CHIỂU</span>
     </span>
   );
 }
