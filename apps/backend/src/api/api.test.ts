@@ -766,6 +766,103 @@ describe('API', { concurrency: false }, () => {
     assert.equal(d.status, 200);
   });
 
+  it('phân quyền: operator xem/trích xuất được, cấu hình/giám sát/admin thì 403', async () => {
+    // Admin tạo nhân sự.
+    let r = await req('/api/admin/users', {
+      method: 'POST',
+      headers: { 'content-type': 'application/json' },
+      body: JSON.stringify({ username: 'op1', email: 'op1@x.y', password: 'pass-1234', role: 'user' }),
+    });
+    assert.equal(r.status, 201);
+    r = await req('/api/admin/users', {
+      method: 'POST',
+      headers: { 'content-type': 'application/json' },
+      body: JSON.stringify({ username: 'op1', email: 'op1@x.y', password: 'pass-1234', role: 'user' }),
+    });
+    assert.equal(r.status, 400); // trùng username
+    r = await req('/api/admin/users', {
+      method: 'POST',
+      headers: { 'content-type': 'application/json' },
+      body: JSON.stringify({ username: 'op2', email: 'op2@x.y', password: 'ngan', role: 'user' }),
+    });
+    assert.equal(r.status, 400); // pass ngắn
+
+    const login = await fetch(`${base}/api/auth/login`, {
+      method: 'POST',
+      headers: { 'content-type': 'application/json' },
+      body: JSON.stringify({ username: 'op1', password: 'pass-1234' }),
+    });
+    assert.equal(login.status, 200);
+    const opCk = (login.headers.get('set-cookie') ?? '').split(';')[0] ?? '';
+    const op = (path: string, init?: RequestInit): Promise<Response> =>
+      fetch(`${base}${path}`, { ...init, headers: { ...(init?.headers ?? {}), cookie: opCk } });
+
+    // Được: đọc sources/kênh, mint link xem, timeshift đọc, trích xuất full flow.
+    assert.equal((await op('/api/sources')).status, 200);
+    assert.equal((await op('/api/epg/status')).status, 200);
+    r = await op('/api/hls-tokens', {
+      method: 'POST',
+      headers: { 'content-type': 'application/json' },
+      body: JSON.stringify({ channel: 'demo4' }),
+    });
+    assert.equal(r.status, 200);
+    const now = Date.now();
+    r = await op('/api/exports', {
+      method: 'POST',
+      headers: { 'content-type': 'application/json' },
+      body: JSON.stringify({
+        channelName: 'demo4',
+        sourceId: 'S1',
+        serviceId: 4,
+        inPoint: new Date(now - 120_000).toISOString(),
+        outPoint: new Date(now).toISOString(),
+      }),
+    });
+    assert.equal(r.status, 200);
+    const job = (await r.json()) as { id: string };
+    const del = await op(`/api/exports/${job.id}`, { method: 'DELETE' });
+    // Job có thể còn PROCESSING (fake tsp) → 400, hoặc xong → 200; cả 2 đều không phải 401/403.
+    assert.ok(del.status === 200 || del.status === 400);
+
+    // Cấm: mọi cấu hình nguồn, pull link, giám sát, admin.
+    const forb: [string, RequestInit?][] = [
+      ['/api/sources', { method: 'POST', headers: { 'content-type': 'application/json' }, body: '{}' }],
+      ['/api/sources/API1', { method: 'PUT', headers: { 'content-type': 'application/json' }, body: '{}' }],
+      ['/api/sources/KHONGCO', { method: 'DELETE' }],
+      ['/api/sources/API1/start', { method: 'POST' }],
+      ['/api/sources/API1/stop', { method: 'POST' }],
+      ['/api/sources/API1/preview-conf'],
+      ['/api/pull-tokens', { method: 'POST', headers: { 'content-type': 'application/json' }, body: '{}' }],
+      ['/api/admin/gc', { method: 'POST', headers: { 'content-type': 'application/json' }, body: '{}' }],
+      ['/api/admin/hls-health'],
+      ['/api/admin/notify-status'],
+      ['/api/admin/notify-test', { method: 'POST' }],
+      ['/api/admin/config-backup'],
+      ['/api/admin/users'],
+      ['/api/admin/epg-sync', { method: 'POST', headers: { 'content-type': 'application/json' }, body: '{}' }],
+    ];
+    for (const [path, init] of forb) {
+      const rr = await op(path, init);
+      assert.equal(rr.status, 403, path);
+      await rr.body?.cancel().catch(() => {});
+    }
+    const sse = await op('/api/system/stream');
+    assert.equal(sse.status, 403);
+    await sse.body?.cancel().catch(() => {});
+
+    // Admin xóa được nhân sự (đang login admin).
+    r = await req('/api/admin/users/op1', { method: 'DELETE' });
+    assert.equal(r.status, 200);
+    r = await req('/api/admin/users/admin', { method: 'DELETE' });
+    assert.equal(r.status, 400);
+    const relogin = await fetch(`${base}/api/auth/login`, {
+      method: 'POST',
+      headers: { 'content-type': 'application/json' },
+      body: JSON.stringify({ username: 'op1', password: 'pass-1234' }),
+    });
+    assert.equal(relogin.status, 401);
+  });
+
   it('SSE cần auth + trả event', async () => {
     const noAuth = await fetch(`${base}/api/system/stream`);
     assert.equal(noAuth.status, 401);

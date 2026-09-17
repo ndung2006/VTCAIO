@@ -133,6 +133,26 @@ export class Store {
     this.users.set(u.username, { ...u });
   }
 
+  /** Tạo user mới (admin gọi qua API). */
+  createUser(u: UserRecord): UserRecord {
+    if (this.users.has(u.username)) throw new Error(`Người dùng ${u.username} đã tồn tại`);
+    for (const x of this.users.values()) {
+      if (x.email.toLowerCase() === u.email.toLowerCase()) throw new Error(`Email ${u.email} đã dùng`);
+    }
+    this.users.set(u.username, { ...u });
+    return u;
+  }
+
+  /** Xóa user (cấm tự xóa chính mình — check ở API vì cần biết ai đang gọi). */
+  deleteUser(username: string): void {
+    if (!this.users.delete(username)) throw new Error(`Người dùng ${username} không tồn tại`);
+  }
+
+  /** Danh sách công khai (KHÔNG hash/token) cho trang quản trị. */
+  listPublicUsers(): { username: string; email: string; role: string }[] {
+    return [...this.users.values()].map((u) => ({ username: u.username, email: u.email, role: u.role }));
+  }
+
   findUser(username: string): UserRecord | undefined {
     return this.users.get(username);
   }

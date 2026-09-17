@@ -5,6 +5,7 @@
 import { useCallback, useEffect, useState } from 'react';
 import { Sidebar } from '@/components/Sidebar';
 import { Header } from '@/components/Header';
+import { RequireAdmin } from '@/lib/role';
 import { api, type Source, type SourceInput } from '@/lib/api';
 
 interface ChannelDraft {
@@ -222,6 +223,7 @@ export default function SourcesPage(): React.JSX.Element {
   };
 
   return (
+    <RequireAdmin>
     <div className="flex">
       <Sidebar />
       <div className="flex-1">
@@ -437,5 +439,6 @@ export default function SourcesPage(): React.JSX.Element {
         </div>
       )}
     </div>
+    </RequireAdmin>
   );
 }

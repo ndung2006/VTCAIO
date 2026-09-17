@@ -5,6 +5,7 @@ import { useCallback, useEffect, useMemo, useState } from 'react';
 import { Sidebar } from '@/components/Sidebar';
 import { Header } from '@/components/Header';
 import { LivePlayer } from '@/components/LivePlayer';
+import { RequireAdmin } from '@/lib/role';
 import { api, timeshiftUrl, type EpgDayView, type EpgStatus, type Source } from '@/lib/api';
 
 function fmtDT(iso: string): string {
@@ -158,6 +159,7 @@ export default function EpgPage(): React.JSX.Element {
   };
 
   return (
+    <RequireAdmin>
     <div className="flex">
       <Sidebar />
       <div className="flex-1">
@@ -333,5 +335,6 @@ export default function EpgPage(): React.JSX.Element {
         </main>
       </div>
     </div>
+    </RequireAdmin>
   );
 }

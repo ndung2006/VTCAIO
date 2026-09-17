@@ -1,9 +1,10 @@
 'use client';
 // Trang Quản trị: kiểm tra kênh cảnh báo Telegram + sao lưu/phục hồi cấu hình.
 // Mọi API đã gate JWT ở backend; middleware chặn chưa login.
-import { useEffect, useState } from 'react';
+import { useCallback, useEffect, useState } from 'react';
 import { Sidebar } from '@/components/Sidebar';
 import { Header } from '@/components/Header';
+import { RequireAdmin } from '@/lib/role';
 import { api } from '@/lib/api';
 
 export default function AdminPage(): React.JSX.Element {
@@ -74,6 +75,7 @@ export default function AdminPage(): React.JSX.Element {
   };
 
   return (
+    <RequireAdmin>
     <div className="flex">
       <Sidebar />
       <div className="flex-1">
@@ -170,8 +172,130 @@ export default function AdminPage(): React.JSX.Element {
               </label>
             </div>
           </div>
+
+          <div className="rounded-xl bg-white p-4 shadow">
+            <h2 className="mb-2 font-semibold">Nhân sự (tài khoản xem)</h2>
+            <UsersCard />
+          </div>
         </main>
       </div>
+    </div>
+    </RequireAdmin>
+  );
+}
+
+function UsersCard(): React.JSX.Element {
+  const [users, setUsers] = useState<{ username: string; email: string; role: string }[]>([]);
+  const [msg, setMsg] = useState('');
+  const [u, setU] = useState('');
+  const [e, setE] = useState('');
+  const [p, setP] = useState('');
+
+  const reload = useCallback(async () => {
+    try {
+      setUsers(await api.adminUsers());
+    } catch {
+      setUsers([]);
+    }
+  }, []);
+  useEffect(() => {
+    void reload();
+  }, [reload]);
+
+  const create = async (ev: React.FormEvent): Promise<void> => {
+    ev.preventDefault();
+    setMsg('');
+    try {
+      await api.adminCreateUser(u.trim(), e.trim(), p, 'user');
+      setMsg(`Đã tạo nhân sự ${u.trim()} (vai xem).`);
+      setU('');
+      setE('');
+      setP('');
+      await reload();
+    } catch (err) {
+      setMsg(err instanceof Error ? err.message : 'Tạo thất bại');
+    }
+  };
+
+  const remove = async (username: string): Promise<void> => {
+    if (!window.confirm(`Xóa nhân sự ${username}?`)) return;
+    setMsg('');
+    try {
+      await api.adminDeleteUser(username);
+      setMsg(`Đã xóa ${username}.`);
+      await reload();
+    } catch (err) {
+      setMsg(err instanceof Error ? err.message : 'Xóa thất bại');
+    }
+  };
+
+  const resetPw = async (username: string): Promise<void> => {
+    const np = window.prompt(`Mật khẩu mới cho ${username} (≥ 8 ký tự):`);
+    if (np === null || np === '') return;
+    setMsg('');
+    try {
+      await api.adminSetPassword(username, np);
+      setMsg(`Đã đặt lại mật khẩu cho ${username} — báo họ đăng nhập lại.`);
+    } catch (err) {
+      setMsg(err instanceof Error ? err.message : 'Đặt lại thất bại');
+    }
+  };
+
+  return (
+    <div>
+      {msg !== '' && <p className="mb-2 rounded bg-amber-50 px-3 py-2 text-sm text-slate-700">{msg}</p>}
+      <table className="w-full text-sm">
+        <tbody>
+          {users.map((x) => (
+            <tr key={x.username} className="border-t">
+              <td className="py-1.5 font-mono">{x.username}</td>
+              <td className="text-slate-500">{x.email}</td>
+              <td>{x.role === 'admin' ? 'quản trị' : 'nhân sự'}</td>
+              <td className="space-x-2 text-right">
+                {x.role !== 'admin' && (
+                  <>
+                    <button onClick={() => void resetPw(x.username)} className="rounded bg-slate-200 px-3 py-1">
+                      Đặt lại MK
+                    </button>
+                    <button
+                      onClick={() => void remove(x.username)}
+                      className="rounded bg-red-100 px-3 py-1 text-red-700"
+                    >
+                      Xóa
+                    </button>
+                  </>
+                )}
+              </td>
+            </tr>
+          ))}
+        </tbody>
+      </table>
+      <form onSubmit={create} className="mt-3 flex flex-wrap gap-2">
+        <input
+          value={u}
+          onChange={(ev) => setU(ev.target.value)}
+          placeholder="Tên đăng nhập"
+          className="w-36 rounded border px-2 py-1.5 text-sm"
+        />
+        <input
+          value={e}
+          onChange={(ev) => setE(ev.target.value)}
+          placeholder="Email"
+          type="email"
+          className="w-48 rounded border px-2 py-1.5 text-sm"
+        />
+        <input
+          value={p}
+          onChange={(ev) => setP(ev.target.value)}
+          placeholder="Mật khẩu ≥ 8 ký tự"
+          type="password"
+          className="w-44 rounded border px-2 py-1.5 text-sm"
+        />
+        <button className="rounded bg-slate-900 px-4 py-1.5 text-sm text-white">Thêm nhân sự</button>
+      </form>
+      <p className="mt-2 text-xs text-slate-500">
+        Nhân sự chỉ xem kênh, timeshift, trích xuất. Mọi cấu hình/giám sát/quản trị đều chặn 403 ở API.
+      </p>
     </div>
   );
 }

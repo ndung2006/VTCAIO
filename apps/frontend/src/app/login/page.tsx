@@ -14,8 +14,8 @@ export default function Login(): React.JSX.Element {
     e.preventDefault();
     setError('');
     try {
-      await api.login(username, password);
-      router.push('/');
+      const r = await api.login(username, password);
+      router.push(r.user.role === 'admin' ? '/' : '/channels');
     } catch {
       setError('Sai tên đăng nhập hoặc mật khẩu');
     }

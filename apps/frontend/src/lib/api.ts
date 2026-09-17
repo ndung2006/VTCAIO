@@ -122,9 +122,35 @@ export const api = {
       credentials: 'include',
       headers: { 'content-type': 'application/json' },
       body: JSON.stringify({ username, password }),
-    }).then((r) => json<{ ok: boolean }>(r)),
+    }).then((r) => json<{ ok: boolean; user: { username: string; role: string } }>(r)),
   logout: () =>
     fetch('/api/auth/logout', { method: 'POST', credentials: 'include' }).then((r) => json<{ ok: boolean }>(r)),
+  me: () =>
+    fetch('/api/auth/me', { credentials: 'include' }).then((r) =>
+      json<{ username: string; role: string }>(r),
+    ),
+  adminUsers: () =>
+    fetch('/api/admin/users', { credentials: 'include' }).then((r) =>
+      json<{ username: string; email: string; role: string }[]>(r),
+    ),
+  adminCreateUser: (username: string, email: string, password: string, role: string) =>
+    fetch('/api/admin/users', {
+      method: 'POST',
+      credentials: 'include',
+      headers: { 'content-type': 'application/json' },
+      body: JSON.stringify({ username, email, password, role }),
+    }).then((r) => json<{ username: string; email: string; role: string }>(r)),
+  adminDeleteUser: (username: string) =>
+    fetch(`/api/admin/users/${encodeURIComponent(username)}`, { method: 'DELETE', credentials: 'include' }).then(
+      (r) => json<{ ok: boolean }>(r),
+    ),
+  adminSetPassword: (username: string, newPassword: string) =>
+    fetch(`/api/admin/users/${encodeURIComponent(username)}/password`, {
+      method: 'POST',
+      credentials: 'include',
+      headers: { 'content-type': 'application/json' },
+      body: JSON.stringify({ newPassword }),
+    }).then((r) => json<{ ok: boolean }>(r)),
   changePassword: (currentPassword: string, newPassword: string, confirmPassword: string) =>
     fetch('/api/auth/change-password', {
       method: 'POST',

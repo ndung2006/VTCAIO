@@ -385,6 +385,14 @@ export function createApi(opts: ApiOptions = {}): {
     },
   });
   const requireAuth = makeRequireAuth(jwtSecret);
+  const FORBIDDEN = 'cần quyền quản trị';
+  /** true nếu là admin (hoặc partner key service = full quyền, đã công bố). */
+  function isAdminReq(req: IncomingMessage): boolean {
+    const me = requireAuth(req);
+    if (me === null) return false;
+    if (me.startsWith('partner:')) return true;
+    return store.findUser(me)?.role === 'admin';
+  }
 
   // Seed admin lúc boot (in-memory; Phase 2b chuyển vào DB + migration).
   const adminUser = opts.adminUser ?? process.env['VTC_ADMIN_USER'] ?? 'admin';
@@ -443,6 +451,16 @@ export function createApi(opts: ApiOptions = {}): {
       if (m === 'POST' && seg[2] === 'logout') {
         res.setHeader('set-cookie', jwtClearCookie());
         send(res, 200, { ok: true });
+        return;
+      }
+      // GET /api/auth/me — ai đang đăng nhập (cho FE phân quyền UI).
+      if (m === 'GET' && seg[2] === 'me' && seg.length === 3) {
+        const me = requireAuth(req);
+        if (me === null) return send(res, 401, { error: 'unauthorized' });
+        if (me.startsWith('partner:')) return send(res, 200, { username: me, role: 'admin' });
+        const user = store.findUser(me);
+        if (user === undefined) return send(res, 401, { error: 'unauthorized' });
+        send(res, 200, { username: user.username, role: user.role });
         return;
       }
       // POST /api/auth/change-password (cần login)
@@ -512,8 +530,12 @@ export function createApi(opts: ApiOptions = {}): {
       }
     }
 
-    // SSE monitor: GET /api/system/stream (đã qua gate ở trên)
+    // SSE monitor: GET /api/system/stream (đã qua gate ở trên, chỉ admin xem giám sát)
     if (m === 'GET' && url.pathname === '/api/system/stream') {
+      if (!isAdminReq(req)) {
+        send(res, 403, { error: FORBIDDEN });
+        return;
+      }
       res.writeHead(200, {
         'content-type': 'text/event-stream',
         'cache-control': 'no-cache',
@@ -540,6 +562,7 @@ export function createApi(opts: ApiOptions = {}): {
     // POST /api/admin/gc {dryRun?} — chạy GC ngay (cron giờ gọi endpoint này
     // hoặc bật VTC_GC_ENABLE=1 để server tự chạy mỗi giờ).
     if (seg[0] === 'api' && seg[1] === 'admin' && m === 'POST' && seg[2] === 'gc') {
+      if (!isAdminReq(req)) return send(res, 403, { error: FORBIDDEN });
       const b = (await readJson(req)) as { dryRun?: unknown };
       const r = await runGarbageCollector({
         captureDir,
@@ -558,16 +581,19 @@ export function createApi(opts: ApiOptions = {}): {
     }
     // GET /api/admin/hls-health — playlist kênh nào stale
     if (seg[0] === 'api' && seg[1] === 'admin' && m === 'GET' && seg[2] === 'hls-health') {
+      if (!isAdminReq(req)) return send(res, 403, { error: FORBIDDEN });
       send(res, 200, await checkHlsHealth(liveDir));
       return;
     }
     // GET /api/admin/notify-status — Telegram đã cấu hình chưa (không lộ secret)
     if (seg[0] === 'api' && seg[1] === 'admin' && m === 'GET' && seg[2] === 'notify-status') {
+      if (!isAdminReq(req)) return send(res, 403, { error: FORBIDDEN });
       send(res, 200, { configured: notifier.configured });
       return;
     }
     // POST /api/admin/notify-test — bắn tin thử để trực ca xác nhận nhận được
     if (seg[0] === 'api' && seg[1] === 'admin' && m === 'POST' && seg[2] === 'notify-test') {
+      if (!isAdminReq(req)) return send(res, 403, { error: FORBIDDEN });
       const result = await notifier.alert(
         'manual-test',
         processAlertText('VẬN HÀNH', 'Tin kiểm tra cảnh báo từ trang Quản trị', 'Nếu nhận được tin này, kênh cảnh báo hoạt động.'),
@@ -577,11 +603,13 @@ export function createApi(opts: ApiOptions = {}): {
     }
     // GET /api/admin/config-backup — tải toàn bộ cấu hình sources (JSON)
     if (seg[0] === 'api' && seg[1] === 'admin' && m === 'GET' && seg[2] === 'config-backup') {
+      if (!isAdminReq(req)) return send(res, 403, { error: FORBIDDEN });
       send(res, 200, { exportedAt: new Date().toISOString(), sources: store.listSources() });
       return;
     }
     // POST /api/admin/config-restore {sources: SourceConfig[]} — phục hồi cấu hình
     if (seg[0] === 'api' && seg[1] === 'admin' && m === 'POST' && seg[2] === 'config-restore') {
+      if (!isAdminReq(req)) return send(res, 403, { error: FORBIDDEN });
       const b = (await readJson(req)) as { sources?: unknown };
       if (!Array.isArray(b.sources)) return send(res, 400, { error: 'thiếu sources[]' });
       const records: SourceConfig[] = [];
@@ -636,6 +664,7 @@ export function createApi(opts: ApiOptions = {}): {
     // POST /api/pull-tokens {channel} — link kéo luồng KHÔNG hết hạn cho đối
     // tác (VTVgo lưu URL 1 lần, play mãi tới khi đổi secret). Kênh phải tồn tại.
     if (seg[0] === 'api' && seg[1] === 'pull-tokens' && seg.length === 2 && m === 'POST') {
+      if (!isAdminReq(req)) return send(res, 403, { error: FORBIDDEN });
       const b = (await readJson(req)) as { channel?: unknown };
       const channel = typeof b.channel === 'string' ? b.channel : '';
       const known = store.listSources().some((s) => s.channels.some((c) => c.name === channel));
@@ -687,6 +716,82 @@ export function createApi(opts: ApiOptions = {}): {
       return;
     }
 
+    //-- Quản trị người dùng (admin) ----------------------------------------------
+    // GET /api/admin/users — danh sách (không hash/token).
+    if (seg[0] === 'api' && seg[1] === 'admin' && seg[2] === 'users' && seg.length === 3 && m === 'GET') {
+      if (!isAdminReq(req)) return send(res, 403, { error: FORBIDDEN });
+      send(res, 200, store.listPublicUsers());
+      return;
+    }
+    // POST /api/admin/users {username, email, password, role} — tạo nhân sự.
+    if (seg[0] === 'api' && seg[1] === 'admin' && seg[2] === 'users' && seg.length === 3 && m === 'POST') {
+      if (!isAdminReq(req)) return send(res, 403, { error: FORBIDDEN });
+      const b = (await readJson(req)) as {
+        username?: unknown;
+        email?: unknown;
+        password?: unknown;
+        role?: unknown;
+      };
+      const username = typeof b.username === 'string' ? b.username.trim() : '';
+      const email = typeof b.email === 'string' ? b.email.trim() : '';
+      const role = b.role === 'admin' ? 'admin' : 'user';
+      if (!/^[A-Za-z0-9_.-]{3,32}$/.test(username)) {
+        return send(res, 400, { error: 'username 3-32 ký tự [A-Za-z0-9_.-]' });
+      }
+      if (!/^[^@\s]+@[^@\s]+\.[^@\s]+$/.test(email)) return send(res, 400, { error: 'email không hợp lệ' });
+      if (typeof b.password !== 'string' || b.password.length < 8) {
+        return send(res, 400, { error: 'mật khẩu tối thiểu 8 ký tự' });
+      }
+      try {
+        store.createUser({ username, email, passwordHash: await hashPassword(b.password), role });
+      } catch (e) {
+        if (e instanceof Error) return send(res, 400, { error: e.message });
+        throw e;
+      }
+      logger.info(`tạo user ${username} (role ${role})`);
+      send(res, 201, { username, email, role });
+      return;
+    }
+    // DELETE /api/admin/users/:username — cấm tự xóa chính mình.
+    if (seg[0] === 'api' && seg[1] === 'admin' && seg[2] === 'users' && seg.length === 4 && m === 'DELETE') {
+      if (!isAdminReq(req)) return send(res, 403, { error: FORBIDDEN });
+      const target = decodeURIComponent(seg[3] ?? '');
+      const me = requireAuth(req);
+      if (me !== null && !me.startsWith('partner:') && me === target) {
+        return send(res, 400, { error: 'không được tự xóa chính mình' });
+      }
+      try {
+        store.deleteUser(target);
+      } catch (e) {
+        if (e instanceof Error) return send(res, 404, { error: e.message });
+        throw e;
+      }
+      logger.info(`xóa user ${target}`);
+      send(res, 200, { ok: true });
+      return;
+    }
+    // POST /api/admin/users/:username/password {newPassword} — đặt lại MK nhân sự.
+    if (
+      seg[0] === 'api' &&
+      seg[1] === 'admin' &&
+      seg[2] === 'users' &&
+      seg.length === 5 &&
+      seg[4] === 'password' &&
+      m === 'POST'
+    ) {
+      if (!isAdminReq(req)) return send(res, 403, { error: FORBIDDEN });
+      const target = decodeURIComponent(seg[3] ?? '');
+      const b = (await readJson(req)) as { newPassword?: unknown };
+      if (typeof b.newPassword !== 'string' || b.newPassword.length < 8) {
+        return send(res, 400, { error: 'mật khẩu mới tối thiểu 8 ký tự' });
+      }
+      if (store.findUser(target) === undefined) return send(res, 404, { error: `Người dùng ${target} không tồn tại` });
+      store.setPasswordHash(target, await hashPassword(b.newPassword));
+      logger.info(`đặt lại mật khẩu user ${target}`);
+      send(res, 200, { ok: true });
+      return;
+    }
+
     //-- EPG đối tác (đã qua gate) ----------------------------------------------
     // GET /api/epg/status — mapping local<->đối tác + ngày đã có + lần sync cuối.
     if (seg[0] === 'api' && seg[1] === 'epg' && seg[2] === 'status' && seg.length === 3 && m === 'GET') {
@@ -719,6 +824,7 @@ export function createApi(opts: ApiOptions = {}): {
     }
     // POST /api/admin/epg-sync {partnerChannelId?} — đồng bộ ngay (tay/nút UI).
     if (seg[0] === 'api' && seg[1] === 'admin' && seg[2] === 'epg-sync' && seg.length === 3 && m === 'POST') {
+      if (!isAdminReq(req)) return send(res, 403, { error: FORBIDDEN });
       if (!epgClient.configured) return send(res, 400, { error: 'chưa cấu hình VTC_EPG_API_KEY' });
       const b = (await readJson(req)) as { partnerChannelId?: unknown };
       const only =
@@ -927,6 +1033,7 @@ export function createApi(opts: ApiOptions = {}): {
         return;
       }
       if (m === 'POST' && id === undefined) {
+        if (!isAdminReq(req)) return send(res, 403, { error: FORBIDDEN });
         const body = checkSourceBody(await readJson(req));
         try {
           generateConfText(body); // validate conf sinh được trước khi lưu (400 thay vì 500 lúc start)
@@ -951,6 +1058,7 @@ export function createApi(opts: ApiOptions = {}): {
           return send(res, 200, r);
         }
         if (m === 'PUT') {
+          if (!isAdminReq(req)) return send(res, 403, { error: FORBIDDEN });
           const cur = store.getSource(id);
           if (cur === undefined) return send(res, 404, { error: `Source ${id} không tồn tại` });
           const patch = (await readJson(req)) as Partial<SourceConfig>;
@@ -987,6 +1095,7 @@ export function createApi(opts: ApiOptions = {}): {
           return;
         }
         if (m === 'DELETE') {
+          if (!isAdminReq(req)) return send(res, 403, { error: FORBIDDEN });
           clearPending(id); // hủy restart đã hẹn (nếu crash trước đó)
           try {
             await pm.stop(id).catch(() => {});
@@ -1002,6 +1111,7 @@ export function createApi(opts: ApiOptions = {}): {
       }
       // GET /api/sources/:id/preview-conf
       if (id !== undefined && m === 'GET' && seg[3] === 'preview-conf') {
+        if (!isAdminReq(req)) return send(res, 403, { error: FORBIDDEN });
         const r = store.getSource(id);
         if (r === undefined) return send(res, 404, { error: `Source ${id} không tồn tại` });
         const gen = generateConfText({ ...r, confRev: r.confRev });
@@ -1010,6 +1120,7 @@ export function createApi(opts: ApiOptions = {}): {
       }
       // POST /api/sources/:id/start
       if (id !== undefined && m === 'POST' && seg[3] === 'start') {
+        if (!isAdminReq(req)) return send(res, 403, { error: FORBIDDEN });
         const r = store.getSource(id);
         if (r === undefined) return send(res, 404, { error: `Source ${id} không tồn tại` });
         try {
@@ -1028,6 +1139,7 @@ export function createApi(opts: ApiOptions = {}): {
       }
       // POST /api/sources/:id/stop
       if (id !== undefined && m === 'POST' && seg[3] === 'stop') {
+        if (!isAdminReq(req)) return send(res, 403, { error: FORBIDDEN });
         noRestart.add(id); // đánh dấu stop tay để onExit không restart
         clearPending(id);
         try {

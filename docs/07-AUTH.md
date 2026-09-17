@@ -38,3 +38,23 @@ curl localhost:8080/api/sources   # → 401 unauthorized (không cookie)
 - Login sai/user lạ cùng message `sai tên đăng nhập hoặc mật khẩu` (không lộ user nào tồn tại).
 - `bcrypt.compare` chạy cả khi user không tồn tại? Hiện return sớm — chấp nhận được cho nội bộ; nếu cần chống timing-attack thì compare với hash giả (ghi chú cho bản cứng hơn).
 - Reset token vô hiệu ngay sau khi dùng (`setPasswordHash` xóa token).
+
+## Phân quyền 2 vai (nhân sự xem + admin cấu hình)
+
+| Vai | Được | Cấm (403 `cần quyền quản trị`) |
+|---|---|---|
+| `admin` | Mọi thứ | — |
+| `user` (nhân sự) | Xem kênh/live/timeshift, trích xuất full (tạo/xem/tải/xóa), đổi MK chính mình | Tạo/sửa/xóa/start/stop/preview nguồn, link pull, giám sát SSE, GC/HLS-health/notify/backup-restore/EPG-sync, quản trị users |
+| partner key (Bearer) | Full quyền service (máy-gọi-máy) | — |
+
+- Role nằm trong JWT + tra store mỗi request (đổi role/xóa user hiệu lực ngay,
+  không chờ token 7 ngày hết hạn).
+- Quản trị users (admin): `GET/POST /api/admin/users`, `DELETE
+  /api/admin/users/:u` (cấm tự xóa mình), `POST .../password` (đặt lại MK nhân
+  sự). UI ở trang Quản trị. Biết ai gọi ai qua log (`tạo user X`, `xóa user X`).
+- UI theo vai: Sidebar ẩn Giám sát/Nguồn/EPG/Quản trị với nhân sự; 4 trang đó bọc
+  `RequireAdmin`; trang Kênh ẩn nút Live-toggle/Link-kéo; login chuyển
+  admin→`/`, nhân sự→`/channels`. Bảo mật thật ở API — UI chỉ để gọn.
+- Xóa user không thu hồi JWT đã cấp (tối đa 7 ngày còn hiệu lực đọc; mọi API
+  cấu hình đã chặn từ lúc xóa vì tra store). Cần đá ngay: đổi `VTC_JWT_SECRET`
+  + restart (mọi phiên chết hết).

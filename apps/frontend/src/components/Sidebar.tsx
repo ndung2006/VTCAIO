@@ -7,10 +7,13 @@ import Link from 'next/link';
 import { usePathname } from 'next/navigation';
 import { useEffect, useState } from 'react';
 import { api, type Source } from '@/lib/api';
+import { useMe } from '@/lib/role';
 
 export function Sidebar(): React.JSX.Element {
   const [sources, setSources] = useState<Source[]>([]);
   const path = usePathname();
+  const me = useMe();
+  const isAdmin = me?.role === 'admin';
 
   useEffect(() => {
     api.sources().then(setSources).catch(() => setSources([]));
@@ -41,24 +44,32 @@ export function Sidebar(): React.JSX.Element {
         )}
       </div>
       <nav className="border-t border-slate-700 p-2 text-sm">
-        <Link href="/" className="block rounded px-2 py-1.5 hover:bg-slate-800">
-          Giám sát
-        </Link>
-        <Link href="/sources" className="block rounded px-2 py-1.5 hover:bg-slate-800">
-          Nguồn
-        </Link>
+        {isAdmin && (
+          <Link href="/" className="block rounded px-2 py-1.5 hover:bg-slate-800">
+            Giám sát
+          </Link>
+        )}
+        {isAdmin && (
+          <Link href="/sources" className="block rounded px-2 py-1.5 hover:bg-slate-800">
+            Nguồn
+          </Link>
+        )}
         <Link href="/channels" className="block rounded px-2 py-1.5 hover:bg-slate-800">
           Kênh
         </Link>
-        <Link href="/epg" className="block rounded px-2 py-1.5 hover:bg-slate-800">
-          EPG
-        </Link>
+        {isAdmin && (
+          <Link href="/epg" className="block rounded px-2 py-1.5 hover:bg-slate-800">
+            EPG
+          </Link>
+        )}
         <Link href="/exports" className="block rounded px-2 py-1.5 hover:bg-slate-800">
           Trích xuất
         </Link>
-        <Link href="/admin" className="block rounded px-2 py-1.5 hover:bg-slate-800">
-          Quản trị
-        </Link>
+        {isAdmin && (
+          <Link href="/admin" className="block rounded px-2 py-1.5 hover:bg-slate-800">
+            Quản trị
+          </Link>
+        )}
       </nav>
     </aside>
   );

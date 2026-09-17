@@ -9,6 +9,7 @@ import { Sidebar } from '@/components/Sidebar';
 import { Header } from '@/components/Header';
 import { api, type Source } from '@/lib/api';
 import { CopyButton } from '@/components/CopyButton';
+import { useMe } from '@/lib/role';
 
 interface Row {
   sourceId: string;
@@ -23,17 +24,19 @@ interface Row {
 
 export default function ChannelsPage(): React.JSX.Element {
   const [sources, setSources] = useState<Source[]>([]);
-  const [health, setHealth] = useState<Map<string, { ageSec: number | null; stale: boolean }>>(new Map());
+  const [health, setHealth] = useState<Map<string, { ageSec: number | null; stale: boolean }> | null>(null);
   const [q, setQ] = useState('');
   const [msg, setMsg] = useState('');
   const [busy, setBusy] = useState('');
   const [pullInfo, setPullInfo] = useState<{ name: string; url: string } | null>(null);
+  const me = useMe();
+  const isAdmin = me?.role === 'admin';
 
   const reload = useCallback(async () => {
     try {
-      const [ss, hh] = await Promise.all([api.sources(), api.hlsHealth().catch(() => [])]);
+      const [ss, hh] = await Promise.all([api.sources(), api.hlsHealth().catch(() => null)]);
       setSources(ss);
-      setHealth(new Map(hh.map((h) => [h.channel, { ageSec: h.ageSec, stale: h.stale }])));
+      setHealth(hh === null ? null : new Map(hh.map((h) => [h.channel, { ageSec: h.ageSec, stale: h.stale }])));
     } catch {
       setSources([]);
     }
@@ -55,8 +58,8 @@ export default function ChannelsPage(): React.JSX.Element {
           serviceId: c.serviceId,
           isLive: c.isLive,
           published: c.published === true,
-          ageSec: health.get(c.name)?.ageSec ?? null,
-          stale: health.get(c.name)?.stale ?? false,
+          ageSec: health?.get(c.name)?.ageSec ?? null,
+          stale: health?.get(c.name)?.stale ?? false,
         })),
       ),
     [sources, health],
@@ -180,7 +183,9 @@ export default function ChannelsPage(): React.JSX.Element {
                     <th>SID</th>
                     <th>Nguồn</th>
                     <th>Live</th>
-                    <th title="Tích để đưa lên danh mục VTVgo (/api/public/channels)">VTVgo</th>
+                    {isAdmin && (
+                      <th title="Tích để đưa lên danh mục VTVgo (/api/public/channels)">VTVgo</th>
+                    )}
                     <th>HLS</th>
                     <th></th>
                   </tr>
@@ -205,40 +210,54 @@ export default function ChannelsPage(): React.JSX.Element {
                         </span>
                       </td>
                       <td>
-                        <button
-                          onClick={() => void toggleLive(r)}
-                          disabled={busy !== ''}
-                          title={r.sourceStatus === 'RUNNING' ? 'Stop nguồn trước khi đổi' : 'Bật/tắt Live'}
-                          className={`rounded px-2 py-0.5 text-xs disabled:opacity-50 ${
-                            r.isLive ? 'bg-green-100 text-green-700' : 'bg-slate-200 text-slate-500'
-                          }`}
-                        >
-                          {r.isLive ? 'BẬT' : 'TẮT'}
-                        </button>
+                        {isAdmin ? (
+                          <button
+                            onClick={() => void toggleLive(r)}
+                            disabled={busy !== ''}
+                            title={r.sourceStatus === 'RUNNING' ? 'Stop nguồn trước khi đổi' : 'Bật/tắt Live'}
+                            className={`rounded px-2 py-0.5 text-xs disabled:opacity-50 ${
+                              r.isLive ? 'bg-green-100 text-green-700' : 'bg-slate-200 text-slate-500'
+                            }`}
+                          >
+                            {r.isLive ? 'BẬT' : 'TẮT'}
+                          </button>
+                        ) : (
+                          <span className={`text-xs ${r.isLive ? 'text-green-600' : 'text-slate-400'}`}>
+                            {r.isLive ? 'BẬT' : 'TẮT'}
+                          </span>
+                        )}
                       </td>
-                      <td>
-                        <input
-                          type="checkbox"
-                          checked={r.published}
-                          disabled={busy !== ''}
-                          onChange={() => void togglePublish(r)}
-                          title="Tích để đưa lên danh mục VTVgo (lưu ngay, không restart)"
-                          aria-label={`Đưa ${r.name} lên VTVgo`}
-                        />
-                      </td>
+                      {isAdmin && (
+                        <td>
+                          <input
+                            type="checkbox"
+                            checked={r.published}
+                            disabled={busy !== ''}
+                            onChange={() => void togglePublish(r)}
+                            title="Tích để đưa lên danh mục VTVgo (lưu ngay, không restart)"
+                            aria-label={`Đưa ${r.name} lên VTVgo`}
+                          />
+                        </td>
+                      )}
                       <td className={r.stale ? 'text-red-600' : 'text-slate-500'}>
-                        {r.isLive ? (r.ageSec === null ? 'mất playlist' : `${r.ageSec}s`) : '—'}
+                        {health === null
+                          ? '—'
+                          : r.isLive
+                            ? (r.ageSec === null ? 'mất playlist' : `${r.ageSec}s`)
+                            : '—'}
                         {r.stale ? ' (stale)' : ''}
                       </td>
                       <td className="space-x-2 pr-3 text-right">
-                        <button
-                          onClick={() => void makePullLink(r)}
-                          disabled={busy !== ''}
-                          title="Tạo link kéo luồng không hết hạn (giao cho đối tác/VTVgo)"
-                          className="rounded bg-slate-200 px-3 py-1 disabled:opacity-50"
-                        >
-                          Link kéo
-                        </button>
+                        {isAdmin && (
+                          <button
+                            onClick={() => void makePullLink(r)}
+                            disabled={busy !== ''}
+                            title="Tạo link kéo luồng không hết hạn (giao cho đối tác/VTVgo)"
+                            className="rounded bg-slate-200 px-3 py-1 disabled:opacity-50"
+                          >
+                            Link kéo
+                          </button>
+                        )}
                         <Link
                           href={`/channel/${encodeURIComponent(r.name)}`}
                           className="rounded bg-slate-900 px-3 py-1 text-white"
