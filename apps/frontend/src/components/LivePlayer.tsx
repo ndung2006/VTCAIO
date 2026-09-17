@@ -25,12 +25,15 @@ export function LivePlayer({
   streamUrl,
   onFatal,
   mode = 'live',
+  className = '',
 }: {
   streamUrl: string;
   /** Gọi khi lỗi fatal (VD token hết hạn) để trang cha cấp link mới. */
   onFatal?: () => void;
   /** live: ẩn seekbar. vod (timeshift/xem lại): seekbar + giờ. */
   mode?: 'live' | 'vod';
+  /** Class ngoài cùng (VD giới hạn rộng khung video). */
+  className?: string;
 }): React.JSX.Element {
   const videoRef = useRef<HTMLVideoElement>(null);
   const [playing, setPlaying] = useState(true);
@@ -139,7 +142,7 @@ export function LivePlayer({
   };
 
   return (
-    <div>
+    <div className={className}>
       <div className="vtc-video-wrap">
         <video ref={videoRef} muted={muted} playsInline />
       </div>
