@@ -197,6 +197,13 @@ export const api = {
       headers: { 'content-type': 'application/json' },
       body: JSON.stringify({ channel }),
     }).then((r) => json<{ channel: string; pull: string; url: string }>(r)),
+  streamScan: (input: string) =>
+    fetch('/api/stream-scan', {
+      method: 'POST',
+      credentials: 'include',
+      headers: { 'content-type': 'application/json' },
+      body: JSON.stringify({ input }),
+    }).then((r) => json<{ programs: { serviceId: number; name: string | null }[]; elapsedMs: number }>(r)),
   publicChannels: () =>
     fetch('/api/public/channels', { credentials: 'include' }).then((r) =>
       json<{

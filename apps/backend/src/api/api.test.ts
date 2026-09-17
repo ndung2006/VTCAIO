@@ -1056,6 +1056,51 @@ describe('API', { concurrency: false }, () => {
     }
   });
 
+  it('stream-scan: admin quét PAT, user 403, input xấu 400', async () => {
+    const scan = (body: unknown, ck = cookie): Promise<Response> =>
+      fetch(`${base}/api/stream-scan`, {
+        method: 'POST',
+        headers: { 'content-type': 'application/json', cookie: ck },
+        body: JSON.stringify(body),
+      });
+    assert.equal((await fetch(`${base}/api/stream-scan`, { method: 'POST', body: '{}' })).status, 401);
+
+    // Nhân sự tạm để khóa gate admin-only.
+    let r = await req('/api/admin/users', {
+      method: 'POST',
+      headers: { 'content-type': 'application/json' },
+      body: JSON.stringify({ username: 'ops', email: 'ops@x.y', password: 'pass-1234', role: 'user' }),
+    });
+    assert.equal(r.status, 201);
+    const login = await fetch(`${base}/api/auth/login`, {
+      method: 'POST',
+      headers: { 'content-type': 'application/json' },
+      body: JSON.stringify({ username: 'ops', password: 'pass-1234' }),
+    });
+    const opsCk = (login.headers.get('set-cookie') ?? '').split(';')[0] ?? '';
+    assert.equal((await scan({ input: 'ip 239.1.1.1:5000' }, opsCk)).status, 403);
+
+    assert.equal((await scan({})).status, 400);
+    assert.equal((await scan({ input: 'udp://@239.1.1.1:5000' })).status, 400);
+
+    // Fake tsp in PAT giả khi argv chứa 'tables' → parser thật chạy qua.
+    r = await scan({ input: 'ip 239.1.1.1:5000' });
+    assert.equal(r.status, 200);
+    const one = (await r.json()) as { programs: { serviceId: number; name: null }[]; elapsedMs: number };
+    assert.deepEqual(one.programs, [{ serviceId: 1, name: null }]);
+    assert.equal(typeof one.elapsedMs, 'number');
+
+    process.env['VTC_FAKE_PROGRAMS'] = '2';
+    try {
+      r = await scan({ input: 'ip 239.1.1.1:5000' });
+      const two = (await r.json()) as { programs: { serviceId: number }[] };
+      assert.deepEqual(two.programs.map((p) => p.serviceId), [1, 2]);
+    } finally {
+      delete process.env['VTC_FAKE_PROGRAMS'];
+    }
+    await req('/api/admin/users/ops', { method: 'DELETE' });
+  });
+
   it('SSE cần auth + trả event', async () => {
     const noAuth = await fetch(`${base}/api/system/stream`);
     assert.equal(noAuth.status, 401);

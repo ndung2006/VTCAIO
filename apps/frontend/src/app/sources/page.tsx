@@ -38,6 +38,11 @@ export default function SourcesPage(): React.JSX.Element {
   // Preview conf + xóa
   const [preview, setPreview] = useState<{ id: string; conf: string; liveCount: number } | null>(null);
   const [confirmDel, setConfirmDel] = useState<Source | null>(null);
+  // Quét luồng (PAT/SDT → sổ chọn kênh, khỏi gõ SID tay)
+  const [scanning, setScanning] = useState(false);
+  const [scanProgs, setScanProgs] = useState<{ serviceId: number; name: string | null }[]>([]);
+  const [scanSel, setScanSel] = useState<number[]>([]);
+  const [scanMsg, setScanMsg] = useState('');
 
   const reload = useCallback(async () => {
     try {
@@ -53,6 +58,12 @@ export default function SourcesPage(): React.JSX.Element {
     return () => clearInterval(t);
   }, [reload]);
 
+  const resetScan = (): void => {
+    setScanProgs([]);
+    setScanSel([]);
+    setScanMsg('');
+  };
+
   const openCreate = (): void => {
     setEditingId(null);
     setFId('');
@@ -61,6 +72,7 @@ export default function SourcesPage(): React.JSX.Element {
     setFRetention('30');
     setFChannels([{ ...EMPTY_CHANNEL }]);
     setMsg('');
+    resetScan();
     setShowForm(true);
   };
 
@@ -80,7 +92,58 @@ export default function SourcesPage(): React.JSX.Element {
         : [{ ...EMPTY_CHANNEL }],
     );
     setMsg('');
+    resetScan();
     setShowForm(true);
+  };
+
+  /** Tên SDT (có dấu/cách) → tên kênh hợp lệ [A-Za-z0-9_-]; rỗng thì kenh-<sid>. */
+  const sanitizeName = (raw: string | null, sid: number): string => {
+    const clean = (raw ?? '').replace(/[^A-Za-z0-9_-]/g, '');
+    return clean === '' ? `kenh-${sid}` : clean;
+  };
+
+  const doScan = async (): Promise<void> => {
+    if (fInput.trim() === '' || scanning) return;
+    setScanning(true);
+    setScanMsg('Đang quét luồng (~6s, tốn 1 tiến trình tsp tạm)…');
+    try {
+      const r = await api.streamScan(fInput.trim());
+      setScanProgs(r.programs);
+      const have = new Set(fChannels.map((c) => Number(c.serviceId)).filter((n) => Number.isInteger(n)));
+      setScanSel(r.programs.filter((p) => !have.has(p.serviceId)).map((p) => p.serviceId));
+      setScanMsg(
+        r.programs.length === 0
+          ? 'Không thấy chương trình nào — kiểm tra input đúng nhóm multicast đang có tín hiệu.'
+          : `Thấy ${r.programs.length} chương trình (${(r.elapsedMs / 1000).toFixed(1)}s). Tích chọn rồi bấm "Thêm kênh đã chọn".`,
+      );
+    } catch (err) {
+      setScanProgs([]);
+      setScanSel([]);
+      setScanMsg(err instanceof Error ? err.message : 'Quét thất bại');
+    } finally {
+      setScanning(false);
+    }
+  };
+
+  const addSelected = (): void => {
+    const haveSid = new Set(fChannels.map((c) => Number(c.serviceId)));
+    const haveName = new Set(fChannels.map((c) => c.name.trim()).filter((n) => n !== ''));
+    const rows: ChannelDraft[] = [];
+    for (const sid of scanSel) {
+      const p = scanProgs.find((x) => x.serviceId === sid);
+      if (p === undefined || haveSid.has(sid)) continue;
+      let name = sanitizeName(p.name, sid);
+      if (haveName.has(name)) name = `${name}-${sid}`;
+      haveSid.add(sid);
+      haveName.add(name);
+      rows.push({ name, serviceId: String(sid), isLive: true });
+    }
+    if (rows.length === 0) return;
+    setFChannels((prev) => {
+      const onlyEmpty = prev.length === 1 && prev[0]?.name.trim() === '' && prev[0]?.serviceId.trim() === '';
+      return onlyEmpty ? rows : [...prev, ...rows];
+    });
+    setScanSel([]);
   };
 
   const validate = (): SourceInput | null => {
@@ -131,7 +194,8 @@ export default function SourcesPage(): React.JSX.Element {
       setMsg('Cấu hình vô nghĩa: 0 kênh live + không ghi catchup (recordAll=false). Hãy bật ít nhất 1 kênh live hoặc bật ghi catchup.');
       return null;
     }
-    const retention = fRetention.trim() === '' ? undefined : Number(fRetention);
+    // Tắt ghi đĩa (chỉ live) thì số ngày lưu chiểu vô nghĩa — bỏ qua, không gửi.
+    const retention = !fRecordAll || fRetention.trim() === '' ? undefined : Number(fRetention);
     if (retention !== undefined && (!Number.isInteger(retention) || retention < 1 || retention > 365)) {
       setMsg('Số ngày lưu chiểu phải 1..365 (để trống = mặc định hệ thống).');
       return null;
@@ -294,8 +358,13 @@ export default function SourcesPage(): React.JSX.Element {
                 {s.channels.map((c) => `${c.name}(sid ${c.serviceId}${c.isLive ? '' : ', no-live'})`).join(', ') || '—'}
               </p>
               <p className="text-sm text-slate-500">
-                {s.recordAll ? 'Ghi catchup toàn MPTS' : 'Không ghi toàn MPTS'} · Lưu{' '}
-                {s.retentionDays ?? 'mặc định'} ngày
+                {s.recordAll ? (
+                  <>
+                    Ghi catchup toàn MPTS · Lưu {s.retentionDays ?? 'mặc định'} ngày
+                  </>
+                ) : (
+                  'Chỉ live — không lưu chiểu (xem trực tiếp bình thường, trích xuất/timeshift báo không có dữ liệu)'
+                )}
               </p>
             </div>
           ))}
@@ -320,23 +389,82 @@ export default function SourcesPage(): React.JSX.Element {
                     value={fRetention}
                     onChange={(e) => setFRetention(e.target.value)}
                     placeholder="30"
-                    className="mt-1 w-full rounded border px-3 py-2"
+                    disabled={!fRecordAll}
+                    className="mt-1 w-full rounded border px-3 py-2 disabled:bg-slate-100 disabled:text-slate-400"
                   />
                 </label>
               </div>
               <label className="block text-sm">
                 Input TSDuck (phần sau -I — VD &quot;ip 239.1.1.1:5000&quot;, không dán link udp:// của VLC)
-                <input
-                  value={fInput}
-                  onChange={(e) => setFInput(e.target.value)}
-                  placeholder="ip 239.1.1.1:5000"
-                  className="mt-1 w-full rounded border px-3 py-2 font-mono"
-                />
+                <div className="mt-1 flex gap-2">
+                  <input
+                    value={fInput}
+                    onChange={(e) => {
+                      setFInput(e.target.value);
+                      resetScan();
+                    }}
+                    placeholder="ip 239.1.1.1:5000"
+                    className="flex-1 rounded border px-3 py-2 font-mono"
+                  />
+                  <button
+                    type="button"
+                    onClick={() => void doScan()}
+                    disabled={scanning || fInput.trim() === ''}
+                    className="shrink-0 rounded bg-sky-700 px-4 py-2 text-sm text-white disabled:opacity-50"
+                  >
+                    {scanning ? 'Đang quét…' : 'Quét luồng'}
+                  </button>
+                </div>
               </label>
+              {(scanMsg !== '' || scanProgs.length > 0) && (
+                <div className="rounded border border-sky-200 bg-sky-50 p-3 text-sm">
+                  {scanMsg !== '' && <p className="mb-2 text-slate-700">{scanMsg}</p>}
+                  {scanProgs.length > 0 && (
+                    <>
+                      <div className="flex max-h-48 flex-wrap gap-2 overflow-auto">
+                        {scanProgs.map((p) => (
+                          <label
+                            key={p.serviceId}
+                            className="flex items-center gap-1.5 rounded bg-white px-2 py-1 shadow-sm"
+                          >
+                            <input
+                              type="checkbox"
+                              checked={scanSel.includes(p.serviceId)}
+                              onChange={(e) =>
+                                setScanSel((sel) =>
+                                  e.target.checked
+                                    ? [...sel, p.serviceId]
+                                    : sel.filter((x) => x !== p.serviceId),
+                                )
+                              }
+                            />
+                            <span className="font-mono font-semibold">{p.serviceId}</span>
+                            <span className="text-slate-600">{p.name ?? '(chưa rõ tên)'}</span>
+                          </label>
+                        ))}
+                      </div>
+                      <button
+                        type="button"
+                        onClick={addSelected}
+                        disabled={scanSel.length === 0}
+                        className="mt-2 rounded bg-slate-900 px-4 py-1.5 text-sm text-white disabled:opacity-50"
+                      >
+                        Thêm {scanSel.length} kênh đã chọn (tên tự điền từ SDT, tick Live)
+                      </button>
+                    </>
+                  )}
+                </div>
+              )}
               <label className="flex items-center gap-2 text-sm">
                 <input type="checkbox" checked={fRecordAll} onChange={(e) => setFRecordAll(e.target.checked)} />
                 Ghi catchup toàn bộ MPTS ra đĩa (khuyên bật)
               </label>
+              {!fRecordAll && (
+                <p className="text-sm text-amber-600">
+                  Tắt ghi đĩa = kênh chỉ live (xem trực tiếp qua RAM bình thường, không tốn ổ). Trích
+                  xuất/timeshift các kênh này sẽ báo không có dữ liệu — muốn lưu chiểu thì bật lại.
+                </p>
+              )}
               <div className="space-y-2">
                 <p className="text-sm font-semibold">Danh sách kênh trong luồng</p>
                 {fChannels.map((c, i) => (

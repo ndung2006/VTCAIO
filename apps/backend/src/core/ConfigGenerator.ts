@@ -48,7 +48,7 @@ function assertChannel(c: SourceConfig['channels'][number], index: number): void
  * từng nguồn, nguồn cũ Start lại là ăn theo (conf sinh lại mỗi lần Start).
  * Input nào đã ghi --local-address thì giữ nguyên (explicit thắng).
  */
-function defaultIfaceArgs(input: string): string[] {
+export function defaultIfaceArgs(input: string): string[] {
   if (input.trim().split(/\s+/)[0] !== 'ip' || input.includes('--local-address')) return [];
   const iface = (process.env['VTC_MULTICAST_IFACE'] ?? '').trim();
   return iface === '' ? [] : ['--local-address', iface];

@@ -9,7 +9,15 @@ import { createServer, type IncomingMessage, type ServerResponse } from 'node:ht
 import { createReadStream, existsSync, mkdirSync, readFileSync, renameSync, writeFileSync } from 'node:fs';
 import { stat } from 'node:fs/promises';
 import { dirname, join, sep } from 'node:path';
-import { generateConfText, writeConfFile, DEFAULT_CONF_DIR, ConfigError } from '../core/ConfigGenerator.js';
+import {
+  generateConfText,
+  writeConfFile,
+  DEFAULT_CONF_DIR,
+  ConfigError,
+  splitInputArgs,
+  defaultIfaceArgs,
+} from '../core/ConfigGenerator.js';
+import { scanStream, StreamScanError } from '../core/streamScan.js';
 import { ProcessManager } from '../core/ProcessManager.js';
 import { Store, type SourceRecord } from './store.js';
 import { snapshot } from './system.js';
@@ -300,6 +308,8 @@ export function createApi(opts: ApiOptions = {}): {
   const epgFutureDays = Number(process.env['VTC_EPG_FUTURE_DAYS'] ?? 7);
   let epgLastSyncAt: string | null = null;
   let epgLastStats: SyncStats | null = null;
+  /** Chống quét luồng đồng thời (join multicast + spawn tsp dồn). */
+  let scanBusy = false;
   /** Mapping local <- đối tác từ cấu hình sources (kênh có partnerChannelId). */
   function epgMappings(): SyncMapping[] {
     return store.listSources().flatMap((s) =>
@@ -1113,6 +1123,33 @@ export function createApi(opts: ApiOptions = {}): {
         send(res, 200, { ok: true });
         return;
       }
+    }
+
+    // POST /api/stream-scan {input} — quét luồng liệt kê chương trình
+    // (PAT→SID, SDT→tên). Chỉ admin: join multicast/spawn tsp. 1 lượt tại
+    // 1 thời điểm (429 nếu đang quét). tsp tạm ~6s, lúc nghỉ tốn 0 CPU.
+    if (seg[0] === 'api' && seg[1] === 'stream-scan' && seg.length === 2 && m === 'POST') {
+      if (!isAdminReq(req)) return send(res, 403, { error: FORBIDDEN });
+      if (scanBusy) return send(res, 429, { error: 'đang có lượt quét khác, thử lại sau vài giây' });
+      const b = (await readJson(req)) as { input?: unknown };
+      const input = typeof b.input === 'string' ? b.input.trim() : '';
+      if (input === '') return send(res, 400, { error: 'thiếu input (VD "ip 239.1.1.1:5000")' });
+      if (input.includes('://')) {
+        return send(res, 400, { error: 'input trông như URL (copy từ VLC) — cần dạng "ip 239.1.1.1:5000"' });
+      }
+      scanBusy = true;
+      const t0 = Date.now();
+      try {
+        const programs = await scanStream(tspBin, splitInputArgs(input), defaultIfaceArgs(input));
+        logger.info(`quét luồng "${input}" → ${programs.length} chương trình`);
+        send(res, 200, { programs, elapsedMs: Date.now() - t0 });
+      } catch (e) {
+        if (e instanceof StreamScanError) return send(res, 502, { error: e.message });
+        throw e;
+      } finally {
+        scanBusy = false;
+      }
+      return;
     }
 
     if (seg[0] === 'api' && seg[1] === 'sources') {

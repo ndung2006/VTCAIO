@@ -45,6 +45,20 @@ segment cũ; `--live 0` bị cấm từ 3.44. Template không phải printf — 
 Chặn sẵn case vô nghĩa (0 live + record_all=0 → chỉ còn `-O drop`) và SID 0
 (đặt trước cho NIT — `zap 0` thoát ngay).
 
+## Kênh chỉ live (không lưu chiểu) + Quét luồng lấy SID
+
+- **Chỉ live:** tắt "Ghi catchup toàn bộ MPTS ra đĩa" (`recordAll=false`) — conf còn
+  đúng các nhánh fork HLS trên RAMDisk + `-O drop`, xem trực tiếp bình thường,
+  không tốn 1 byte ổ HDD. Ô "Số ngày lưu chiểu" tự mờ + không gửi. Trích
+  xuất/timeshift kênh này báo không có dữ liệu (đúng bản chất, không phải lỗi).
+- **Quét luồng** (`POST /api/stream-scan {input}`, chỉ admin): chạy 1 tsp tạm
+  `tables --pid 0 --pid 0x11` + `until --seconds 6` rồi tắt → trả
+  `{programs: [{serviceId, name|null}]}` (SID từ PAT, tên từ SDT; luồng không
+  phát SDT thì tên null, UI tự gợi ý `kenh-<sid>`). 1 lượt tại 1 thời điểm (429
+  nếu trùng) — **CPU lúc nghỉ bằng 0**, chỉ tốn ~6s đúng lúc bấm nút "Quét luồng"
+  ở form Thêm nguồn. Tick chọn → tên + SID tự điền vào form (vẫn sửa tay được),
+  khỏi đoán SID hay dùng phần mềm ngoài.
+
 ## Chạy full trong container
 
 ```sh
