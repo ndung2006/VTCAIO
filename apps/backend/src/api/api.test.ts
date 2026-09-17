@@ -16,11 +16,12 @@ const expsDir = '/tmp/vtc-test-exps';
 before(() => {
   setLogDir('/tmp/vtc-test-api-logs'); // logger không ghi vào repo
   // Fake tsp 3 chế độ: chứa 'tables' → in PAT giả (1 program, hoặc 2 nếu
-  // VTC_FAKE_PROGRAMS=2) rồi exit 0 (cho timeshift probe); arg cuối *.ts → ghi
-  // output + exit 0 (export); ngược lại exec sleep (start/stop dài hạn).
+  // VTC_FAKE_PROGRAMS=2) rồi exit 0 (cho timeshift probe); arg cuối *.ts hoặc
+  // '-' (zap pipe stdout) → ghi/echo output + exit 0 (export/timeshift MPTS);
+  // ngược lại exec sleep (start/stop dài hạn).
   writeFileSync(
     fakeTsp,
-    '#!/bin/sh\ncase "$*" in *tables*) echo "* PAT, TID 0x00"; echo "    Program:     1 (0x0001)  PID:   32"; if [ "$VTC_FAKE_PROGRAMS" = "2" ]; then echo "    Program:     2 (0x0002)  PID:   33"; fi; exit 0;; esac\nout=""; for a in "$@"; do out="$a"; done\ncase "$out" in *.ts) echo fake-ts > "$out"; exit 0;; esac\nexec sleep 60\n',
+    '#!/bin/sh\ncase "$*" in *tables*) echo "* PAT, TID 0x00"; echo "    Program:     1 (0x0001)  PID:   32"; if [ "$VTC_FAKE_PROGRAMS" = "2" ]; then echo "    Program:     2 (0x0002)  PID:   33"; fi; exit 0;; esac\nout=""; for a in "$@"; do out="$a"; done\ncase "$out" in -) echo fake-ts; exit 0;; *.ts) echo fake-ts > "$out"; exit 0;; esac\nexec sleep 60\n',
     'utf8',
   );
   chmodSync(fakeTsp, 0o755);
@@ -737,7 +738,7 @@ describe('API', { concurrency: false }, () => {
     assert.equal(d.status, 200);
   });
 
-  it('timeshift MPTS: báo thẳng dùng Trích xuất (fake PAT 2 programs)', async () => {
+  it('timeshift MPTS: playlist gắn sid + chunks lọc zap (fake PAT 2 programs)', async () => {
     const { mkdirSync: mk, writeFileSync: wr } = await import('node:fs');
     const { join } = await import('node:path');
     mk(join(capsDir, 'TMM'), { recursive: true });
@@ -757,8 +758,22 @@ describe('API', { concurrency: false }, () => {
     try {
       const now = Date.now();
       r = await req(`/api/timeshift/tsMulti?inPoint=${now - 120_000}&outPoint=${now}`);
-      assert.equal(r.status, 400);
-      assert.match(((await r.json()) as { error: string }).error, /MPTS.*Trích xuất/);
+      assert.equal(r.status, 200);
+      const pl = await r.text();
+      assert.ok(pl.includes('&sid=71'), 'MPTS gắn sid để lọc theo yêu cầu');
+      const m = /\/api\/timeshift\/chunks\?source=TMM&file=catchup_00001\.ts&channel=tsMulti&sid=71&(token=[0-9a-f]{64}&exp=\d+)/.exec(pl);
+      assert.ok(m !== null);
+      // Chunk qua zap pipe (fake tsp echo fake-ts khi arg cuối là '-').
+      const zapped = await fetch(`${base}/api/timeshift/chunks?source=TMM&file=catchup_00001.ts&channel=tsMulti&sid=71&${m[1]}`);
+      assert.equal(zapped.status, 200);
+      assert.match(await zapped.text(), /fake-ts/);
+      // sid không khớp kênh → 400 (chống xem ké program khác).
+      const wrong = await fetch(`${base}/api/timeshift/chunks?source=TMM&file=catchup_00001.ts&channel=tsMulti&sid=72&${m[1]}`);
+      assert.equal(wrong.status, 400);
+      await wrong.body?.cancel().catch(() => {});
+      const badSid = await fetch(`${base}/api/timeshift/chunks?source=TMM&file=catchup_00001.ts&channel=tsMulti&sid=abc&${m[1]}`);
+      assert.equal(badSid.status, 400);
+      await badSid.body?.cancel().catch(() => {});
     } finally {
       delete process.env['VTC_FAKE_PROGRAMS'];
     }

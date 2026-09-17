@@ -6,6 +6,7 @@
  // Endpoints auth: xem docs/07-AUTH.md.
  //=============================================================================
 import { createServer, type IncomingMessage, type ServerResponse } from 'node:http';
+import { spawn } from 'node:child_process';
 import { createReadStream, existsSync, mkdirSync, readFileSync, renameSync, writeFileSync } from 'node:fs';
 import { stat } from 'node:fs/promises';
 import { dirname, join, sep } from 'node:path';
@@ -972,11 +973,9 @@ export function createApi(opts: ApiOptions = {}): {
         if (e instanceof TimeshiftError) return send(res, 502, { error: e.message });
         throw e;
       }
-      if (programs.length > 1) {
-        return send(res, 400, {
-          error: `Luồng đa chương trình (MPTS, ${programs.length} chương trình): timeshift không hỗ trợ — dùng Trích xuất để tải file`,
-        });
-      }
+      // MPTS: trình phát không tự chọn program — lọc SID theo yêu cầu ở
+      // endpoint chunks (?sid=), SPTS giữ serve file trực tiếp (0 CPU thêm).
+      const sidFilter = programs.length > 1 ? found.c.serviceId : null;
       // Lan auth của request xuống từng segment (trình phát không kế thừa query).
       const pull = url.searchParams.get('pull');
       const token = url.searchParams.get('token') ?? '';
@@ -995,7 +994,8 @@ export function createApi(opts: ApiOptions = {}): {
           const file = p.split('/').at(-1) as string;
           const uri =
             `/api/timeshift/chunks?source=${encodeURIComponent(found.s.id)}` +
-            `&file=${encodeURIComponent(file)}&channel=${encodeURIComponent(channel)}`;
+            `&file=${encodeURIComponent(file)}&channel=${encodeURIComponent(channel)}` +
+            (sidFilter !== null ? `&sid=${sidFilter}` : '');
           return { file: uri, mtimeMs: (await stat(p)).mtimeMs };
         }),
       );
@@ -1008,11 +1008,14 @@ export function createApi(opts: ApiOptions = {}): {
       res.end(body);
       return;
     }
-    // GET /api/timeshift/chunks?source=&file=&channel=&token|pull= — stream 1 chunk.
+    // GET /api/timeshift/chunks?source=&file=&channel=[&sid=]&token|pull= — stream 1 chunk.
+    // sid (MPTS): lọc đúng 1 chương trình bằng `zap` rồi pipe ra (tốn 1 tsp
+    // ngắn mỗi segment); phải khớp serviceId của channel trong cấu hình.
     if (seg[0] === 'api' && seg[1] === 'timeshift' && seg[2] === 'chunks' && seg.length === 3 && m === 'GET') {
       const sourceId = url.searchParams.get('source') ?? '';
       const file = url.searchParams.get('file') ?? '';
       const channel = url.searchParams.get('channel') ?? '';
+      const sidRaw = url.searchParams.get('sid');
       const pull = url.searchParams.get('pull');
       const authed =
         pull !== null
@@ -1021,6 +1024,20 @@ export function createApi(opts: ApiOptions = {}): {
       if (!authed) return send(res, 403, { error: 'Link xem hết hạn hoặc không hợp lệ' });
       if (!/^[A-Za-z0-9_-]+$/.test(sourceId) || !/^[A-Za-z0-9_.-]+\.ts$/.test(file)) {
         return send(res, 400, { error: 'tham số không hợp lệ' });
+      }
+      let sid: number | null = null;
+      if (sidRaw !== null) {
+        const n = Number(sidRaw);
+        if (!Number.isInteger(n) || n < 1 || n > 65535) {
+          return send(res, 400, { error: 'sid phải là số nguyên 1..65535' });
+        }
+        const want = store
+          .listSources()
+          .flatMap((s) => s.channels)
+          .find((c) => c.name === channel)?.serviceId;
+        if (want === undefined) return send(res, 400, { error: `Kênh ${channel} không còn trong cấu hình` });
+        if (want !== n) return send(res, 400, { error: 'sid không khớp kênh (chống xem ké program khác)' });
+        sid = n;
       }
       const full = join(captureDir, sourceId, file);
       const base = join(captureDir, sourceId) + sep;
@@ -1032,8 +1049,41 @@ export function createApi(opts: ApiOptions = {}): {
         return send(res, 404, { error: 'Chunk không còn (có thể đã bị GC dọn)' });
       }
       if (!st.isFile()) return send(res, 404, { error: 'Chunk không còn' });
-      res.writeHead(200, { 'content-type': 'video/mp2t', 'content-length': st.size, 'cache-control': 'public, max-age=60' });
-      createReadStream(full).on('error', () => res.destroy()).pipe(res);
+      if (sid === null) {
+        res.writeHead(200, { 'content-type': 'video/mp2t', 'content-length': st.size, 'cache-control': 'public, max-age=60' });
+        createReadStream(full).on('error', () => res.destroy()).pipe(res);
+        return;
+      }
+      // MPTS: zap đúng SID rồi pipe stdout (chunked, không content-length).
+      res.writeHead(200, { 'content-type': 'video/mp2t', 'cache-control': 'public, max-age=60' });
+      const child = spawn(tspBin, ['-I', 'file', full, '-P', 'zap', String(sid), '-O', 'file', '-'], {
+        stdio: ['ignore', 'pipe', 'pipe'],
+      });
+      const kill = (): void => {
+        try {
+          child.kill('SIGKILL');
+        } catch {
+          /* đã chết */
+        }
+      };
+      const timer = setTimeout(kill, 60000); // chunk 60s đọc local: quá là treo
+      timer.unref?.();
+      child.stderr?.on('data', () => {}); // drain chống đầy pipe
+      child.on('error', () => {
+        clearTimeout(timer);
+        kill();
+        if (!res.writableEnded) res.destroy();
+      });
+      child.on('exit', (code) => {
+        clearTimeout(timer);
+        if (code !== 0 && !res.writableEnded) res.destroy();
+      });
+      req.on('close', () => {
+        clearTimeout(timer);
+        kill();
+      });
+      child.stdout?.on('error', () => res.destroy());
+      child.stdout?.pipe(res);
       return;
     }
 

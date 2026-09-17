@@ -14,17 +14,21 @@
   `GET /api/epg/status`, Xuất EPG = tải JSON ngày đang xem.
 - Danh mục public cho VTVgo có thêm `epgId` (cộng, không phá schema cũ).
 
-## Timeshift SPTS (E2)
+## Timeshift SPTS + MPTS qua zap (E2)
 
-- Ranh giới sản phẩm: **SPTS phát trực tiếp, MPTS báo thẳng dùng Trích xuất**.
-  Phân biệt bằng PAT thật (`probeProgramCount` đọc chunk mới nhất), không tin
-  cấu hình (nguồn 1 kênh vẫn có thể trỏ luồng MPTS).
+- Ranh giới sản phẩm: **SPTS serve file trực tiếp (0 CPU), MPTS lọc đúng SID
+  theo yêu cầu** (`?sid=`, pipe qua `tsp -P zap`). Phân biệt bằng PAT thật
+  (`probeProgramCount` đọc chunk mới nhất), không tin cấu hình (nguồn 1 kênh
+  vẫn có thể trỏ luồng MPTS — đúng case 3 mux toàn MPTS ở Prod).
 - `GET /api/timeshift/:channel?in=&out=` (ISO/epoch, tối đa 6h): resolve chunk
   theo mtime → probe → dựng m3u8 ảo trong RAM (`MEDIA-SEQUENCE` theo số chunk,
   `DISCONTINUITY` khi gap > 1.5 chunk, `ENDLIST` vì khoảng đóng) → player tua được.
-- Segment trỏ `GET /api/timeshift/chunks?source=&file=&channel=&token|pull=`
+  MPTS tự gắn `&sid=<serviceId>` vào từng URI segment.
+- Segment trỏ `GET /api/timeshift/chunks?source=&file=&channel=[&sid=]&token|pull=`
   (stream byte, chặn traversal, 404 khi GC đã dọn). Auth: cookie/Bearer như
   thường, hoặc token kênh trên URL (miễn gate, handler kiểm chặt lại).
+  `sid` phải khớp serviceId của channel trong cấu hình (400 nếu lệch — chống xem
+  ké program khác cùng mux); zap pipe có timeout 60s + kill khi client ngắt.
 - Player `LivePlayer` thêm mode `vod` (seekbar + giờ, giữ cleanup chống leak RAM).
 - Hết retention/khoảng trống → 400/404 câu rõ ràng, UI hiện nguyên văn.
 
