@@ -36,6 +36,8 @@ export default function ChannelPage({ params }: { params: { id: string } }): Rea
   const [day, setDay] = useState<EpgDayView | null>(null);
   // Player 2 chế độ: live mặc định, vod khi Xem từ EPG.
   const [vod, setVod] = useState<{ url: string; title: string } | null>(null);
+  // EPG: bấm tên chương trình thì bung chi tiết + nút Xem/Trích xuất.
+  const [openId, setOpenId] = useState<string | null>(null);
 
   const retriesRef = retries;
   const mint = useCallback(async () => {
@@ -92,7 +94,7 @@ export default function ChannelPage({ params }: { params: { id: string } }): Rea
         }
         api
           .epgSchedule(name, pick)
-          .then(setDay)
+          .then(applyDay)
           .catch(() => setDay(null));
       })
       .catch(() => {});
@@ -104,13 +106,26 @@ export default function ChannelPage({ params }: { params: { id: string } }): Rea
     void mint();
   }, [mint, retriesRef]);
 
+  /** Nạp lịch ngày + tự bung chương trình đang phát (nếu có). */
+  const applyDay = (d: EpgDayView | null): void => {
+    setDay(d);
+    if (d === null) {
+      setOpenId(null);
+      return;
+    }
+    const t = Date.now();
+    const cur = d.programs.find((p) => Date.parse(p.startTime) <= t && t < Date.parse(p.endTime));
+    setOpenId(cur?.id ?? null);
+  };
+
   const loadDay = async (): Promise<void> => {
     if (viewDate === '') return;
     setMsg('');
     try {
-      setDay(await api.epgSchedule(name, viewDate));
+      applyDay(await api.epgSchedule(name, viewDate));
     } catch (err) {
       setDay(null);
+      setOpenId(null);
       setMsg(err instanceof Error ? err.message : 'Không tải được lịch');
     }
   };
@@ -181,84 +196,102 @@ export default function ChannelPage({ params }: { params: { id: string } }): Rea
             ))}
           {msg !== '' && <p className="rounded bg-amber-50 px-3 py-2 text-sm text-slate-700">{msg}</p>}
 
-          {vod === null ? (
-            link !== '' && <LivePlayer streamUrl={link} onFatal={handleFatal} className="max-w-3xl" />
-          ) : (
-            <div className="max-w-3xl space-y-2 rounded-xl bg-white p-4 shadow">
-              <div className="flex flex-wrap items-center gap-2">
-                <p className="text-sm font-semibold">Đang xem lại: {vod.title}</p>
-                <button onClick={() => setVod(null)} className="ml-auto rounded bg-slate-200 px-3 py-1 text-sm">
-                  Về Live
-                </button>
-              </div>
-              <LivePlayer key={vod.url} streamUrl={vod.url} mode="vod" />
-            </div>
-          )}
-
-          {mapped && (
-            <div className="rounded-xl bg-white p-4 shadow">
-              <div className="mb-2 flex flex-wrap items-center gap-2">
-                <h2 className="font-semibold">Lịch phát sóng</h2>
-                <input
-                  type="date"
-                  value={viewDate}
-                  onChange={(e) => setViewDate(e.target.value)}
-                  className="rounded border px-3 py-1.5 text-sm"
-                />
-                <button onClick={loadDay} className="rounded bg-slate-200 px-3 py-1.5 text-sm">
-                  Xem ngày
-                </button>
-                <div className="ml-auto flex gap-2">
-                  <Link href="/epg" className="rounded bg-slate-200 px-3 py-1.5 text-sm">
-                    Quản lý EPG
-                  </Link>
-                  {day !== null && (
-                    <button onClick={downloadDay} className="rounded bg-slate-200 px-3 py-1.5 text-sm">
-                      Xuất EPG
-                    </button>
-                  )}
-                </div>
-              </div>
-              {day === null ? (
-                <p className="text-sm text-slate-500">Chưa có lịch ngày này (chỉ hiện lịch đã duyệt).</p>
-              ) : day.programs.length === 0 ? (
-                <p className="text-sm text-amber-600">Ngày này chưa có lịch đã duyệt.</p>
+          <div className="grid items-start gap-4 xl:grid-cols-[minmax(0,1fr)_400px]">
+            <div>
+              {vod === null ? (
+                link !== '' && <LivePlayer streamUrl={link} onFatal={handleFatal} />
               ) : (
-                <table className="w-full text-sm">
-                  <tbody>
-                    {day.programs.map((p) => {
-                      const now = isNow(p.startTime, p.endTime);
-                      return (
-                        <tr key={p.id} className={`border-t ${now ? 'bg-green-50' : ''}`}>
-                          <td className="whitespace-nowrap py-1.5 pr-3 font-mono text-slate-500">
-                            {fmtT(p.startTime)} → {fmtT(p.endTime)}
-                            {now && <span className="ml-2 text-xs font-bold text-green-600">ĐANG PHÁT</span>}
-                          </td>
-                          <td>
-                            <span className="font-semibold">{p.title}</span>
-                          </td>
-                          <td className="space-x-2 whitespace-nowrap pl-2 text-right">
-                            <button
-                              onClick={() => void watchProgram(p.title, p.startTime, p.endTime)}
-                              className="rounded bg-green-600 px-3 py-1 text-white"
-                            >
-                              Xem
-                            </button>
-                            <button
-                              onClick={() => exportProgram(p.title, p.startTime, p.endTime)}
-                              className="rounded bg-slate-900 px-3 py-1 text-white"
-                            >
-                              Trích xuất
-                            </button>
-                          </td>
-                        </tr>
-                      );
-                    })}
-                  </tbody>
-                </table>
+                <div className="space-y-2 rounded-xl bg-white p-4 shadow">
+                  <div className="flex flex-wrap items-center gap-2">
+                    <p className="text-sm font-semibold">Đang xem lại: {vod.title}</p>
+                    <button onClick={() => setVod(null)} className="ml-auto rounded bg-slate-200 px-3 py-1 text-sm">
+                      Về Live
+                    </button>
+                  </div>
+                  <LivePlayer key={vod.url} streamUrl={vod.url} mode="vod" />
+                </div>
               )}
             </div>
-          )}
+
+            {mapped && (
+              <div className="rounded-xl bg-white p-4 shadow">
+                <div className="mb-2 flex flex-wrap items-center gap-2">
+                  <h2 className="font-semibold">Lịch phát sóng</h2>
+                  <div className="ml-auto flex gap-2">
+                    <Link href="/epg" className="rounded bg-slate-200 px-2 py-1.5 text-xs">
+                      EPG
+                    </Link>
+                    {day !== null && (
+                      <button onClick={downloadDay} className="rounded bg-slate-200 px-2 py-1.5 text-xs">
+                        Xuất
+                      </button>
+                    )}
+                  </div>
+                </div>
+                <div className="mb-2 flex gap-2">
+                  <input
+                    type="date"
+                    value={viewDate}
+                    onChange={(e) => setViewDate(e.target.value)}
+                    className="min-w-0 flex-1 rounded border px-2 py-1.5 text-sm"
+                  />
+                  <button onClick={loadDay} className="shrink-0 rounded bg-slate-200 px-3 py-1.5 text-sm">
+                    Xem
+                  </button>
+                </div>
+                {day === null ? (
+                  <p className="text-sm text-slate-500">Chưa có lịch ngày này (chỉ hiện lịch đã duyệt).</p>
+                ) : day.programs.length === 0 ? (
+                  <p className="text-sm text-amber-600">Ngày này chưa có lịch đã duyệt.</p>
+                ) : (
+                  <ul className="max-h-[60vh] space-y-1 overflow-auto">
+                    {day.programs.map((p) => {
+                      const now = isNow(p.startTime, p.endTime);
+                      const open = openId === p.id;
+                      return (
+                        <li key={p.id} className={`rounded border px-2 py-1.5 text-sm ${now ? 'border-green-300 bg-green-50' : ''}`}>
+                          <button
+                            onClick={() => setOpenId(open ? null : p.id)}
+                            className="flex w-full items-baseline gap-2 text-left"
+                          >
+                            <span className="shrink-0 font-mono text-xs text-slate-500">
+                              {fmtT(p.startTime)}
+                            </span>
+                            <span className={`min-w-0 flex-1 truncate font-semibold ${open ? 'whitespace-normal' : ''}`}>
+                              {p.title}
+                            </span>
+                            {now && <span className="shrink-0 text-xs font-bold text-green-600">ĐANG PHÁT</span>}
+                          </button>
+                          {open && (
+                            <div className="mt-1 space-y-1.5 border-t pt-1.5">
+                              <p className="font-mono text-xs text-slate-500">
+                                {fmtT(p.startTime)} → {fmtT(p.endTime)}
+                              </p>
+                              {p.description !== '' && <p className="text-slate-600">{p.description}</p>}
+                              <div className="flex gap-2">
+                                <button
+                                  onClick={() => void watchProgram(p.title, p.startTime, p.endTime)}
+                                  className="flex-1 rounded bg-green-600 px-3 py-1.5 text-white"
+                                >
+                                  Xem lại
+                                </button>
+                                <button
+                                  onClick={() => exportProgram(p.title, p.startTime, p.endTime)}
+                                  className="flex-1 rounded bg-slate-900 px-3 py-1.5 text-white"
+                                >
+                                  Trích xuất
+                                </button>
+                              </div>
+                            </div>
+                          )}
+                        </li>
+                      );
+                    })}
+                  </ul>
+                )}
+              </div>
+            )}
+          </div>
         </main>
       </div>
     </div>
