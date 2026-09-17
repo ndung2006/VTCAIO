@@ -14,21 +14,29 @@
   `GET /api/epg/status`, Xuất EPG = tải JSON ngày đang xem.
 - Danh mục public cho VTVgo có thêm `epgId` (cộng, không phá schema cũ).
 
-## Timeshift SPTS + MPTS qua zap (E2)
+## Timeshift luôn lọc SID, không probe (E2)
 
-- Ranh giới sản phẩm: **SPTS serve file trực tiếp (0 CPU), MPTS lọc đúng SID
-  theo yêu cầu** (`?sid=`, pipe qua `tsp -P zap`). Phân biệt bằng PAT thật
-  (`probeProgramCount` đọc chunk mới nhất), không tin cấu hình (nguồn 1 kênh
-  vẫn có thể trỏ luồng MPTS — đúng case 3 mux toàn MPTS ở Prod).
+- Ranh giới sản phẩm: playlist **luôn gắn `?sid=<serviceId>`**, endpoint chunks
+  lọc đúng 1 chương trình bằng `tsp -P zap` rồi pipe ra. SPTS = passthrough
+  (đúng pipeline live `-P zap` chạy 24/7), MPTS = lọc. SID validate 1..65535 lúc
+  tạo nguồn (+ nút Quét luồng), mismatch 400.
+- Bài học 17/09/2026 (Prod): bản đầu probe PAT bằng `tsp` spawn theo click để
+  phân biệt SPTS/MPTS — treo request không lý do dưới tải (exit/timer mất tích
+  dù loop sống, curl timeout 20-40s với 0 byte, mọi bước lẻ đo riêng đều nhanh).
+  Bỏ probe khỏi đường request → playlist chỉ còn resolve chunks (87ms) + stat +
+  build, không spawn gì → hết treo theo thiết kế. `probeProgramCount` giữ lại
+  làm utility có test (không dùng trong request nóng).
 - `GET /api/timeshift/:channel?in=&out=` (ISO/epoch, tối đa 6h): resolve chunk
-  theo mtime → probe → dựng m3u8 ảo trong RAM (`MEDIA-SEQUENCE` theo số chunk,
+  theo mtime → dựng m3u8 ảo trong RAM (`MEDIA-SEQUENCE` theo số chunk,
   `DISCONTINUITY` khi gap > 1.5 chunk, `ENDLIST` vì khoảng đóng) → player tua được.
-  MPTS tự gắn `&sid=<serviceId>` vào từng URI segment.
-- Segment trỏ `GET /api/timeshift/chunks?source=&file=&channel=[&sid=]&token|pull=`
-  (stream byte, chặn traversal, 404 khi GC đã dọn). Auth: cookie/Bearer như
+- Segment trỏ `GET /api/timeshift/chunks?source=&file=&channel=&sid=&token|pull=`
+  (stream, chặn traversal, 404 khi GC đã dọn). Auth: cookie/Bearer như
   thường, hoặc token kênh trên URL (miễn gate, handler kiểm chặt lại).
   `sid` phải khớp serviceId của channel trong cấu hình (400 nếu lệch — chống xem
   ké program khác cùng mux); zap pipe có timeout 60s + kill khi client ngắt.
+- Lưới an toàn giữ lại: mọi lỗi lạ trong dựng playlist → 500 + log,
+  không bao giờ để treo câm (log warn). Container chạy `init: true` (tini) để thu dọn
+  tiến trình `tsp` con (trước đó zombie tồn từ boot).
 - Player `LivePlayer` thêm mode `vod` (seekbar + giờ, giữ cleanup chống leak RAM).
 - Hết retention/khoảng trống → 400/404 câu rõ ràng, UI hiện nguyên văn.
 

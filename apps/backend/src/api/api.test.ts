@@ -700,15 +700,17 @@ describe('API', { concurrency: false }, () => {
     const pl = await r.text();
     assert.ok(pl.includes('#EXT-X-MEDIA-SEQUENCE:1'));
     assert.ok(pl.includes('#EXT-X-DISCONTINUITY')); // gap 240s giữa chunk 1-2
-    assert.ok(pl.includes('/api/timeshift/chunks?source=TMS&file=catchup_00002.ts&channel=tsShift&token='));
+    // Luôn lọc SID (kể cả SPTS = passthrough): playlist gắn &sid=70.
+    assert.ok(pl.includes('/api/timeshift/chunks?source=TMS&file=catchup_00002.ts&channel=tsShift&sid=70&token='));
     assert.ok(pl.trimEnd().endsWith('#EXT-X-ENDLIST'));
 
     // Chunk không cookie nhưng token trong URL vẫn 200 (miễn gate đúng).
-    const m = /token=[0-9a-f]{64}&exp=\d+/.exec(pl);
+    const m = /sid=70&(token=[0-9a-f]{64}&exp=\d+)/.exec(pl);
     assert.ok(m !== null);
-    const noCookie = await fetch(`${base}/api/timeshift/chunks?source=TMS&file=catchup_00002.ts&channel=tsShift&${m[0]}`);
+    // Qua zap pipe (fake tsp echo fake-ts khi arg cuối là '-').
+    const noCookie = await fetch(`${base}/api/timeshift/chunks?source=TMS&file=catchup_00002.ts&channel=tsShift&sid=70&${m[1]}`);
     assert.equal(noCookie.status, 200);
-    assert.equal(await noCookie.text(), 'chunk-catchup_00002.ts');
+    assert.match(await noCookie.text(), /fake-ts/);
 
     // Token sai nhưng đã login (cookie) → qua gate, rớt ở handler: 403.
     const bad = await req(
