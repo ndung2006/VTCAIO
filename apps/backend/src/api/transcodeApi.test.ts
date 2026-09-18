@@ -238,4 +238,69 @@ describe('Transcode API', { concurrency: false }, () => {
     }
     assert.equal(running, true); // đã restart với pid mới
   });
+
+  it('PUT sources đổi endpoint → hot-restart ffmpeg, tsp giữ nguyên pid', async () => {
+    const src = (await (await req('/api/sources/TC1')).json()) as {
+      pid: number;
+      channels: { name: string; serviceId: number; isLive: boolean; transcode: { outputs: { port: number }[] } }[];
+    };
+    const ff0 = (await (await req('/api/transcode/status')).json()) as { pid: number; waiting: boolean }[];
+    assert.equal(ff0.length, 1);
+    assert.equal(typeof ff0[0]?.waiting, 'boolean'); // endpoint có trường waiting
+    const ch = src.channels.find((c) => c.name === 'tcv1');
+    assert.ok(ch !== undefined);
+    const outputs = ch.transcode.outputs.map((o) => ({ ...o, port: 9003 }));
+    const r = await req('/api/sources/TC1', putJson({ channels: [{ ...ch, transcode: { ...ch.transcode, outputs } }] }));
+    assert.equal(r.status, 200);
+    const src2 = (await (await req('/api/sources/TC1')).json()) as { pid: number };
+    assert.equal(src2.pid, src.pid); // tsp KHÔNG restart
+    const ff1 = (await (await req('/api/transcode/status')).json()) as { pid: number }[];
+    assert.equal(ff1.length, 1);
+    assert.notEqual(ff1[0]?.pid, ff0[0]?.pid); // ffmpeg đã hot-restart
+  });
+
+  it('tạo/sửa source trỏ preset lạ → 400 ngay, không đợi start', async () => {
+    const bad = {
+      id: 'TCBAD',
+      input: 'file /tmp/vtc-demo/input.ts --repeat',
+      recordAll: true,
+      channels: [
+        {
+          name: 'tcbad',
+          serviceId: 99,
+          isLive: true,
+          transcode: { enabled: true, loopbackPort: 6009, presetIds: ['khong-co'], outputs: [] },
+        },
+      ],
+    };
+    let r = await req('/api/sources', json(bad));
+    assert.equal(r.status, 400);
+    assert.match(((await r.json()) as { error: string }).error, /không tồn tại/);
+    // PUT cũng chặn
+    r = await req('/api/sources/TC1', putJson({ channels: [{ name: 'tcv1', serviceId: 11, isLive: true, transcode: { enabled: true, loopbackPort: 6001, presetIds: ['khong-co'], outputs: [] } }] }));
+    assert.equal(r.status, 400);
+  });
+
+  it('crash-guard: crash liên tục → dừng hẳn, không restart vô hạn', async () => {
+    // Giết ffmpeg lặp lại: mỗi crash +1 trong window 5 phút (test crash trước
+    // đã tích 1). Tới crash thứ 4 tổng thì guard chặn restart → status trống.
+    // Vòng lặp tối đa 6 lần để không phụ thuộc số crash tích lũy trước đó.
+    for (let i = 0; i < 6; i++) {
+      const s = (await (await req('/api/transcode/status')).json()) as { pid: number }[];
+      if (s.length === 0) break; // đã dừng hẳn (guard kích hoạt hoặc chưa restart)
+      process.kill(s[0]?.pid ?? 0, 'SIGKILL');
+      // Chờ restart (nếu còn cho phép) rồi giết tiếp
+      const deadline = Date.now() + 3000;
+      while (Date.now() < deadline) {
+        await sleep(200);
+        const cur = (await (await req('/api/transcode/status')).json()) as { pid: number }[];
+        if (cur.length === 0) break; // guard chặn → khỏi chờ thêm
+        if (cur[0]?.pid !== s[0]?.pid) break; // đã restart → vòng tiếp
+      }
+    }
+    // Chốt: sau đủ crash phải dừng hẳn (không restart vô hạn)
+    await sleep(600);
+    const fin = (await (await req('/api/transcode/status')).json()) as unknown[];
+    assert.equal(fin.length, 0);
+  });
 });

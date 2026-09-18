@@ -18,9 +18,16 @@ curl localhost:8080/health
 | GET/POST | `/api/sources` | list / tạo `{id,input,channels,recordAll}` |
 | GET/PUT/DELETE | `/api/sources/:id` | sửa/xóa chỉ khi STOPPED |
 | GET | `/api/sources/:id/preview-conf` | xem conf trước khi start (debug MPTS) |
-| POST | `/api/sources/:id/start` | ghi conf + `tsp @conf` → `{pid, conf}` |
-| POST | `/api/sources/:id/stop` | kill nhóm PGID |
+| POST | `/api/sources/:id/start` | ghi conf + `tsp @conf` → `{pid, conf}` + hẹn spawn ffmpeg kênh transcode |
+| POST | `/api/sources/:id/stop` | kill nhóm PGID (diệt ffmpeg trước, tsp sau) |
 | GET | `/api/system/stream` | SSE 2s `{cpu,ram_used,disk_percent,network:{tx,rx}}` |
+| GET/POST | `/api/presets` | list / tạo preset transcode (chi tiết docs/16 §8.3) |
+| PUT/DELETE | `/api/presets/:id` | sửa (kênh chạy không ảnh hưởng) / xóa (đang dùng thì 400) |
+| PUT | `/api/sources/:id/channels/:name/transcode` | `{transcode}` hai tầng: cấu trúc khi RUNNING → 400, endpoint → hot-restart ffmpeg |
+| POST | `/api/sources/:id/channels/:name/transcode-start` | start tay ffmpeg (source phải RUNNING) |
+| POST | `/api/sources/:id/channels/:name/transcode-stop` | stop tay ffmpeg (không động tsp) |
+| POST | `/api/sources/:id/channels/:name/srt-test` | `{port}` → caller bắt tay 8s vào srt-listen của kênh |
+| GET | `/api/transcode/status` | snapshot mọi ffmpeg `{key,pid,fps,bitrateKbps,stale,crashes}` |
 
 Ví dụ nhanh:
 

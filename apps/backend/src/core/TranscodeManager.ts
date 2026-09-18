@@ -19,6 +19,8 @@ interface ManagedTranscode {
   child: ChildProcess;
   pid: number; // đồng thời là PGID vì detached:true
   intentionalStop: boolean;
+  /** Ms epoch lúc spawn — suy "waiting" khi quá lâu chưa có progress. */
+  startedAtMs: number;
   /** Mốc crash không chủ đích (ms epoch) — caller dùng chống lặp restart. */
   crashes: number[];
   lastFps: number | null;
@@ -50,6 +52,8 @@ export interface TranscodeSnapshot {
   lastBitrateKbps: number | null;
   lastProgressAt: number | null;
   crashCount: number;
+  /** Ms epoch lúc spawn (endpoint suy waiting khi quá lâu chưa có progress). */
+  startedAtMs: number;
 }
 
 // Dòng progress của `ffmpeg -progress pipe:1`: "fps=25.00",
@@ -101,6 +105,7 @@ export class TranscodeManager extends EventEmitter {
       lastBitrateKbps: m.lastBitrateKbps,
       lastProgressAt: m.lastProgressAt,
       crashCount: m.crashes.length,
+      startedAtMs: m.startedAtMs,
     };
   }
 
@@ -150,6 +155,7 @@ export class TranscodeManager extends EventEmitter {
       child,
       pid: child.pid,
       intentionalStop: false,
+      startedAtMs: Date.now(),
       crashes: [],
       lastFps: null,
       lastBitrateKbps: null,
@@ -247,12 +253,15 @@ export class TranscodeManager extends EventEmitter {
 
   private onExit(key: string, m: ManagedTranscode, code: number | null, signal: string | null): void {
     const wasIntentional = m.intentionalStop;
-    if (!wasIntentional) {
-      m.crashes.push(Date.now());
-      this.crashLog.set(key, [...m.crashes]);
-    } else {
+    if (wasIntentional) {
       // Operator can thiệp (stop tay) = reset vòng đếm crash.
       this.crashLog.delete(key);
+      m.crashes = [];
+    } else {
+      // CỘNG DỒN vào log cũ (m.crashes là của process vừa chết — process mới
+      // spawn lại từ [] nên phải đọc crashLog, không là đếm mãi = 1).
+      m.crashes = [...(this.crashLog.get(key) ?? []), Date.now()];
+      this.crashLog.set(key, [...m.crashes]);
     }
     const crashes = [...m.crashes];
     this.procs.delete(key);

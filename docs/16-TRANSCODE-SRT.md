@@ -118,6 +118,11 @@ Bật/tắt transcode làm đổi file conf của tsp (thêm/bớt dòng fork) �
 ### 3.3. Sizing + ràng buộc MPTS (QUY TẮC SẮT)
 
 - 4 renditions ≈ **3–5 core CPU / kênh** (veryfast).
+- **Số đo thực 18/09/2026** (container 6 CPU, libx264 veryfast CBR, full 4 renditions + audio-only):
+  - Nguồn lab 1080i (testsrc): **~3.3 core/kênh**, fps tổng ~49.
+  - File .ts THẬT (DN1, SID 807: H.264 1080i25 + MP2 stereo): **~5.0 core/kênh**, fps ~31. yadif deinterlace đúng (đầu ra progressive 25fps cả 3 rendition), MP2 decode → AAC không lỗi. File kéo về đủ 1080/720/480 + AAC, audio-only không lẫn hình.
+  - Kết luận sizing: nội dung thật interlaced nằm ở TRẦN quy tắc 3–5 core. Quy hoạch máy Prod lấy **5 core/kênh**, không lấy số lab.
+- 1 Source MPTS nhiều kênh: mỗi kênh bật transcode = 1 fork + 1 ffmpeg + N outputs. VD 5 kênh × 5 outputs = 25 luồng encode ≈ 15–25 core.
 - 1 Source MPTS nhiều kênh: mỗi kênh bật transcode = 1 fork + 1 ffmpeg + N outputs. VD 5 kênh × 5 outputs = 25 luồng encode ≈ 15–25 core.
 - **Phase 1: bật transcode từng kênh một** (`channel.transcode.enabled`), không bật cả source. Dashboard hiện warning CPU trước khi bật kênh thứ N; fps encode < 25 = máy yếu → giảm profile hoặc tách node transcode riêng. Tuyệt đối không transcode chung máy ingest khi CPU burst (rung luồng gốc → CC-error giả).
 
@@ -134,6 +139,12 @@ Bật/tắt transcode làm đổi file conf của tsp (thêm/bớt dòng fork) �
 - Port cấp theo kênh, không cho tự gõ tự do. `streamid = tên kênh`.
 - Passphrase ≥16 ký tự **bắt buộc ở Prod** (test nội bộ được tắt). `rendezvous` chỉ khi cả 2 bên cùng NAT khó.
 - Backend chạy `network_mode: host` → SRT listener mở port trực tiếp trên host, không cần port mapping (§11 firewall).
+- **QUY TẮC VẬN HÀNH (đo thực tế ffmpeg 8.1, 18/09/2026): output SRT listener CHẶN ở bước mở cho tới khi caller đầu tiên kết nối.** Hệ quả:
+  1. Kênh có N srt-listen output cần ĐỦ N caller thì ffmpeg mới bắt đầu encode — thiếu 1 caller là cả cụm đứng (kể cả output multicast/RTMP khác, vì ffmpeg mở outputs tuần tự).
+  2. Chỉ tạo srt-listen cho rendition THỰC SỰ có bên kéo (VTVgo/monitor). Rendition chỉ kiểm tra nội bộ → dùng UDP multicast (không chặn).
+  3. Lỗi I/O ở 1 output giết cả process ffmpeg (ngữ nghĩa ffmpeg) → crash → restart theo §9.2, có Telegram.
+  4. Dashboard phân biệt 3 trạng thái: `waiting` (sống quá 30s chưa có frame — thường là chờ caller), `stale` (đã chạy rồi đứng fps), còn lại là chạy.
+  5. Nút srt-test chỉ chứng minh BẮT TAY (handshake) — bằng chứng luồng có dữ liệu là `fps > 0` trên dashboard. Tác dụng phụ hay: bấm Test cũng "mồi" cho ffmpeg đang chờ caller bắt đầu chạy.
 
 ---
 
@@ -306,6 +317,8 @@ Auto-restart của tsp nằm ở `server.ts` (noRestart Set + pendingRestarts Ma
 
 - **T0:** xin VTVgo: chiều nào, mấy kênh, port/streamid/passphrase hoặc RTMP URL+key, IP whitelist 2 chiều.
 - **T1 (test tay, chưa UI):** 1 kênh → ffmpeg 4 renditions + audio-only → 4 SRT listen + 1 UDP-mcast → VLC/ffplay kéo thử 24h, ghi CPU/fps/RTT. Verify cú pháp URL query UDP (§2.2) trên ffmpeg trong image.
+  - KẾT QUẢ E2E 18/09/2026 (ffmpeg 8.1, file 720p25 GOP 2s, container 6 CPU): chuỗi đầy đủ file → yadif/fps/scale → libx264 CBR → SRT listen → caller kéo → giải mã được H.264 1280×720 25fps + AAC; `fps=137` ở 720p veryfast; progress `-progress pipe:1` parse được qua TranscodeManager. Phát hiện và sửa 1 bug thật: nhánh filter của preset không có output trỏ tới làm ffmpeg lỗi `Error binding filtergraph` (generator giờ chỉ sinh nhánh cho preset được dùng).
+  - LƯU Ý MÔI TRƯỜNG: UDP (nhất là multicast) trong Docker dev không đáng tin để test (mất gói/SPS-PPS) — E2E dùng file input (`inputUrl` override); UDP loopback verify lại trên máy Prod (rmem 25MB).
 - **T2:** preset DB + API + UI + nút Test + Telegram. Chốt Phương án A/B ở §2.3.
 - **T3:** caller/push sang VTVgo thật + RTMP 2 chiều + firewall/port planning.
   - ĐÃ XONG (infra, không cần VTVgo): MediaMTX sidecar (`mediamtx/mediamtx.yml` + `docker-compose.mediamtx.yml`, RTMP :1935, publish user/pass, image ghim `v1.9.3`) — up độc lập cùng backend CPU/GPU để đối tác test push. Bảng cổng docs/13 §0 + check tay prod-check §7 đã có.

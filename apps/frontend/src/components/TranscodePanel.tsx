@@ -159,8 +159,12 @@ export function TranscodePanel(props: {
     <div className="space-y-3 rounded-xl bg-white p-4 shadow">
       <div className="flex flex-wrap items-center gap-2">
         <h2 className="font-semibold">TRUYỀN DẪN (Transcode + SRT/RTMP/UDP)</h2>
-        <span className={`text-sm ${status !== null ? (status.stale ? 'text-amber-600' : 'text-green-600') : 'text-slate-400'}`}>
-          {status !== null ? `● ffmpeg chạy${status.stale ? ' (STALE — fps đứng)' : ''}` : '○ ffmpeg chưa chạy'}
+        <span className={`text-sm ${status !== null ? (status.stale ? 'text-amber-600' : status.waiting ? 'text-sky-600' : 'text-green-600') : 'text-slate-400'}`}>
+          {status !== null
+            ? status.waiting
+              ? '◌ ffmpeg chờ caller SRT đầu tiên (chưa có frame)'
+              : `● ffmpeg chạy${status.stale ? ' (STALE — fps đứng)' : ''}`
+            : '○ ffmpeg chưa chạy'}
         </span>
         {status !== null && (
           <span className="text-xs text-slate-500">

@@ -45,6 +45,8 @@ export interface TcStatus {
   bitrateKbps: number | null;
   lastProgressAt: number | null;
   stale: boolean;
+  /** Sống quá 30s chưa có frame: thường đang chờ caller SRT đầu tiên. */
+  waiting: boolean;
   crashes: number;
 }
 

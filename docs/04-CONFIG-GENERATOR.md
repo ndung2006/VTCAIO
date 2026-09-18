@@ -38,6 +38,17 @@ tsp -P zap 4 -O hls --duration 5 --live 5 --playlist /media/ramdisk/live/demo4/i
 dòng là tsp nhai từng ký tự (`unknown option -2 -3 -9...`). Chuỗi lệnh fork là
 1 dòng = 1 argv (tương đương shell `"..."` nhưng không quote).
 
+**Fork loopback transcode (docs/16 §2).** Kênh bật transcode sinh thêm 1 fork
+SPTS sau các fork HLS (thứ tự cố định):
+```text
+-P
+fork
+tsp -P zap 4 -O ip 127.0.0.1:6001
+```
+ffmpeg đọc URL này làm input (`?overrun_nonfatal=1&fifo_size=...`). Shell
+`gen-conf.sh` dùng field thứ 4 `name:sid:is_live:loopbackPort` (trống/0 =
+không fork) — đã verify byte-identical với Node (xem commit transcode T1+T2).
+
 **Lưu chiểu = VoD (không `--live`).** `--live N` là live stream và TSDuck tự xóa
 segment cũ; `--live 0` bị cấm từ 3.44. Template không phải printf — TSDuck tự
 đánh số (`catchup-000000.ts`, exporter đọc theo mtime nên không care tên).

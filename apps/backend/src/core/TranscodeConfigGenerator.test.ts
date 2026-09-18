@@ -188,6 +188,21 @@ describe('buildFfmpegArgs', () => {
     assert.throws(() => buildFfmpegArgs({ channelName: 'v', loopbackPort: 6001, presets: [], outputs: [parseOutput(listen(9001))] }), /≥1 preset/);
   });
 
+  it('preset không có output trỏ tới thì KHÔNG sinh nhánh filter (ffmpeg bắt map hết)', () => {
+    // Bug thật bắt bằng E2E: nhánh thừa → "Error binding filtergraph inputs/outputs".
+    const args = buildFfmpegArgs({
+      channelName: 'v',
+      loopbackPort: 6001,
+      presets: presetsById(['p1080', 'p720']),
+      outputs: [parseOutput({ type: 'srt-listen', presetId: 'p720', enabled: true, port: 9001 })],
+    });
+    const s = args.join(' ');
+    assert.ok(!s.includes('split='), '1 rendition dùng thì không split');
+    assert.ok(s.includes('scale=1280:720'), 'chỉ scale rendition được dùng');
+    assert.ok(!s.includes('1920'), 'không nhắc gì tới preset thừa');
+    assert.ok(!s.includes('[v1]'), 'không có nhánh [v1] thừa');
+  });
+
   it('preset width lẻ thì parsePreset ném (x264 yêu cầu chẵn)', () => {
     assert.throws(() => parsePreset({ id: 'x', name: 'x', video: { codec: 'h264', width: 853, height: 480, bitrateKbps: 1000, fps: 25, gop: 50, preset: 'veryfast' }, audio: { codec: 'aac', bitrateKbps: 128, sampleRate: 48000, channels: 2 } }), /chẵn/);
   });
@@ -243,6 +258,46 @@ describe('engine CPU/GPU', () => {
     assert.doesNotThrow(() => assertEngineAvailable('cpu', ' V..... libx264 libx264 H.264\n'));
     assert.doesNotThrow(() => assertEngineAvailable('nvenc', ' V..... libx264\n V..... h264_nvenc NVIDIA\n'));
     assert.throws(() => assertEngineAvailable('nvenc', ' V..... libx264 libx264 H.264\n'), /Dockerfile.backend-gpu/);
+  });
+});
+
+describe('input file override (lab/source file)', () => {
+  it('inputUrl file → -i file, không ép -f mpegts; UDP mặc định vẫn ép', () => {
+    const file = buildFfmpegArgs({
+      channelName: 'filech',
+      loopbackPort: 6001,
+      presets: presetsById(['p720']),
+      outputs: [parseOutput({ type: 'srt-listen', presetId: 'p720', enabled: true, port: 9001 })],
+      inputUrl: '/mnt/Data/cap.ts',
+    });
+    const fi = file.indexOf('-i');
+    assert.equal(file[fi + 1], '/mnt/Data/cap.ts');
+    assert.equal(file[fi - 1], 'pipe:1'); // không có '-f mpegts' trước -i file (tự detect demuxer)
+    // UDP mặc định: -f mpegts đứng ngay trước -i udp://
+    const udp = buildFfmpegArgs({
+      channelName: 'udpch',
+      loopbackPort: 6001,
+      presets: presetsById(['p720']),
+      outputs: [parseOutput({ type: 'srt-listen', presetId: 'p720', enabled: true, port: 9001 })],
+    });
+    const ui = udp.indexOf('-i');
+    assert.equal(udp[ui - 2], '-f');
+    assert.equal(udp[ui - 1], 'mpegts');
+    assert.ok((udp[ui + 1] ?? '').startsWith('udp://'));
+  });
+
+  it('inputUrl rỗng thì ném', () => {
+    assert.throws(
+      () =>
+        buildFfmpegArgs({
+          channelName: 'x',
+          loopbackPort: 6001,
+          presets: presetsById(['p720']),
+          outputs: [parseOutput({ type: 'srt-listen', presetId: 'p720', enabled: true, port: 9001 })],
+          inputUrl: '  ',
+        }),
+      /inputUrl rỗng/,
+    );
   });
 });
 

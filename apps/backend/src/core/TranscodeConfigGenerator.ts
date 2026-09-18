@@ -229,6 +229,13 @@ export interface FfmpegJob {
   outputs: TranscodeOutput[];
   /** Engine encode (mặc định cpu). */
   engine?: TranscodeEngine | undefined;
+  /**
+   * Giá trị `-i` đầy đủ, đè lên URL UDP loopback mặc định.
+   * Production LUÔN dùng UDP loopback (giữ giám sát CC-error tầng ingest).
+   * Chỉ dùng input file ở lab/test hoặc source file của TSDuck
+   * (VD `/mnt/Data/cap.ts`) — spawn argv trực tiếp nên không lo injection.
+   */
+  inputUrl?: string | undefined;
   /** Map ref → passphrase đã resolve từ secret store (KHÔNG persist). */
   secrets?: Record<string, string>;
 }
@@ -327,7 +334,10 @@ export function buildFfmpegArgs(job: FfmpegJob): string[] {
   if (!/^[A-Za-z0-9_-]+$/.test(job.channelName)) {
     throw new TranscodeError(`channelName "${job.channelName}" chỉ cho [A-Za-z0-9_-]`);
   }
-  assertLoopbackPort(job.loopbackPort);
+  const inputUrl = job.inputUrl !== undefined && job.inputUrl !== '' ? job.inputUrl : transcodeInputUrl(job.loopbackPort);
+  if (job.inputUrl !== undefined && job.inputUrl.trim() === '') {
+    throw new TranscodeError('inputUrl rỗng');
+  }
   if (job.presets.length === 0) throw new TranscodeError('transcode cần ≥1 preset');
   if (job.outputs.length === 0) throw new TranscodeError('transcode cần ≥1 output (enabled)');
 
@@ -352,9 +362,13 @@ export function buildFfmpegArgs(job: FfmpegJob): string[] {
     throw new TranscodeError('cổng srt-listen bị trùng (1 port = 1 rendition)');
   }
 
-  // Đánh chỉ số video [v0],[v1]... cho preset có hình (giữ thứ tự preset).
+  // Đánh chỉ số video [v0],[v1]... — CHỈ cho preset có output trỏ tới.
+  // ffmpeg BẮT BUỘC mọi nhánh filter_complex đều được -map (nhánh thừa →
+  // "Error binding filtergraph inputs/outputs"). Preset không ai dùng thì
+  // không sinh nhánh (tiết kiệm cả CPU scale thừa).
+  const usedIds = new Set(outputs.map((o) => o.presetId));
+  const videoPresets = presets.filter((p) => p.video !== null && usedIds.has(p.id));
   const videoIdx = new Map<string, number>();
-  const videoPresets = presets.filter((p) => p.video !== null);
   videoPresets.forEach((p, i) => videoIdx.set(p.id, i));
 
   // Dựng filter_complex: deinterlace + fps 1 lần rồi split cho N rendition.
@@ -377,9 +391,14 @@ export function buildFfmpegArgs(job: FfmpegJob): string[] {
     '-nostdin',
     '-loglevel', 'warning',
     '-progress', 'pipe:1',
-    '-f', 'mpegts',
-    '-i', transcodeInputUrl(job.loopbackPort),
   ];
+  if (job.inputUrl !== undefined && job.inputUrl !== '') {
+    // Input file/lab: để ffmpeg tự detect demuxer (không ép -f mpegts).
+    args.push('-i', inputUrl);
+  } else {
+    // Production: UDP loopback, ép demuxer mpegts để khỏi probe chờ trên UDP lossy.
+    args.push('-f', 'mpegts', '-i', inputUrl);
+  }
   if (filters.length > 0) args.push('-filter_complex', filters.join(';'));
 
   for (const o of outputs) {

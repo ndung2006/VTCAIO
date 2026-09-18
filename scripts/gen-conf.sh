@@ -11,6 +11,9 @@
 #   - 1 Source = 1 file .conf = 1 process tsp @conf chạy 24/7.
 #   - TUYỆT ĐỐI KHÔNG --max-duration. Cắt chunk = -O hls --live 0.
 #   - Mỗi kênh is_live=true sinh 1 fork HLS con trên RAMDisk.
+#   - Kênh có field thứ 4 loopbackPort (6000-6099) sinh thêm 1 fork SPTS ra
+#     UDP loopback cho ffmpeg (PORT 1-1 với Node: channel.transcode.enabled +
+#     loopbackPort — docs/16 §2). Trống/0 = không transcode.
 #   - serviceId 1..65535 (0 đặt trước cho NIT).
 #
 # Dùng:
@@ -18,6 +21,8 @@
 #     --channel ch1:5:1 --channel ch2:6:1 --record-all 1
 #   sh scripts/gen-conf.sh --source TS8 --input "ip 239.69.69.10:1234" \
 #     --channel "DongNai1:2004:1" --channel "LaoCai:2005:1" --record-all 1
+#   sh scripts/gen-conf.sh --source TS8 --input "ip 239.69.69.10:1234" \
+#     --channel "DongNai1:2004:1:6001" --record-all 1   # kênh 2004 bật transcode
 #   cat storage/conf/DEMO.conf
 #
 # SONG SONG VỚI HỆ CŨ: path live/capture lấy từ ENV (PORT 1-1 với Node
@@ -37,7 +42,7 @@ CHANNELS=""
 log() { printf '[gen-conf] %s\n' "$*"; }
 die() { printf '[gen-conf][ERROR] %s\n' "$*" >&2; exit 1; }
 usage() {
-    echo "Usage: $0 --source ID --input \"...\" [--channel name:sid:is_live]... [--record-all 0|1]"
+    echo "Usage: $0 --source ID --input \"...\" [--channel name:sid:is_live[:loopbackPort]]... [--record-all 0|1]"
     exit 2
 }
 
@@ -88,6 +93,22 @@ fi
         if [ "$is_live" = "1" ]; then
             printf -- '-P\nfork\ntsp -P zap %s -O hls --duration 5 --live 5 --playlist %s/%s/index.m3u8 %s/%s/segment.ts\n' \
                 "$sid" "$VTC_LIVE_DIR" "$name" "$VTC_LIVE_DIR" "$name"
+        fi
+    done
+    # Fork loopback transcode (PORT 1-1 với Node, sau fork HLS — docs/16 §2):
+    for c in $CHANNELS; do
+        name=$(printf '%s' "$c" | awk -F: '{print $1}')
+        sid=$(printf '%s' "$c" | awk -F: '{print $2}')
+        is_live=$(printf '%s' "$c" | awk -F: '{print $3}')
+        loopback=$(printf '%s' "$c" | awk -F: '{print $4}')
+        if [ "$is_live" = "1" ] && [ -n "$loopback" ] && [ "$loopback" != "0" ]; then
+            case "$loopback" in
+                ''|*[!0-9]*) die "kênh $name: loopbackPort '$loopback' phải là số 6000..6099 (trống/0 = không transcode)";;
+            esac
+            if [ "$loopback" -lt 6000 ] || [ "$loopback" -gt 6099 ]; then
+                die "kênh $name: loopbackPort $loopback ngoài 6000..6099 (UDP nội bộ tsp→ffmpeg)"
+            fi
+            printf -- '-P\nfork\ntsp -P zap %s -O ip 127.0.0.1:%s\n' "$sid" "$loopback"
         fi
     done
     if [ "$RECORD_ALL" = "1" ]; then

@@ -671,6 +671,26 @@ export function createApi(opts: ApiOptions = {}): {
     return JSON.stringify({ p: n.presetIds, o: n.outputs, e: n.engine ?? 'cpu' });
   }
 
+  /**
+   * Fail-fast lúc tạo/sửa source: preset/output transcode phải hợp lệ NGAY
+   * (đừng để tới lúc start mới nổ). Trả message lỗi hoặc null = đạt.
+   */
+  function checkTranscodeRefs(s: SourceConfig): string | null {
+    for (const c of s.channels) {
+      const t = normalizeChannelTranscode(c.transcode);
+      if (t === undefined || !t.enabled) continue;
+      for (const p of t.presetIds) {
+        if (presetStore.getPreset(p) === undefined) return `kênh ${c.name} trỏ preset "${p}" không tồn tại`;
+      }
+      try {
+        for (const o of t.outputs) parseOutput(o);
+      } catch (e) {
+        return `kênh ${c.name}: ${e instanceof Error ? e.message : 'output sai'}`;
+      }
+    }
+    return null;
+  }
+
   const requireAuth = makeRequireAuth(jwtSecret);
   const FORBIDDEN = 'cần quyền quản trị';
   /** true nếu là admin (hoặc partner key service = full quyền, đã công bố). */
@@ -1490,6 +1510,8 @@ export function createApi(opts: ApiOptions = {}): {
           if (e instanceof ConfigError || e instanceof TranscodeError) return send(res, 400, { error: e.message });
           throw e;
         }
+        const tcErr = checkTranscodeRefs(body); // preset/output phải tồn tại từ lúc tạo
+        if (tcErr !== null) return send(res, 400, { error: tcErr });
         const dup = duplicateChannelName([...store.listSources(), body]);
         if (dup !== null) return send(res, 400, { error: dup });
         const mapErr = checkPartnerMapping([...store.listSources(), body]);
@@ -1523,6 +1545,8 @@ export function createApi(opts: ApiOptions = {}): {
             if (e instanceof ConfigError || e instanceof TranscodeError) return send(res, 400, { error: e.message });
             throw e;
           }
+          const tcErr = checkTranscodeRefs(merged);
+          if (tcErr !== null) return send(res, 400, { error: tcErr });
           const withMerged = store.listSources().map((s) => (s.id === id ? merged : s));
           const dup = duplicateChannelName(withMerged);
           if (dup !== null) return send(res, 400, { error: dup });
@@ -1816,6 +1840,10 @@ export function createApi(opts: ApiOptions = {}): {
         200,
         tm.keys().map((k) => {
           const s = tm.snapshot(k);
+          // waiting = sống quá 30s mà chưa có frame nào: thường là đang chờ
+          // caller SRT đầu tiên (ffmpeg listener chặn ở output-open — docs/16
+          // §4), hoặc input/encode kẹt. Phân biệt với stale (đã chạy rồi đứng).
+          const waiting = (s?.lastProgressAt ?? null) === null && Date.now() - (s?.startedAtMs ?? Date.now()) > 30000;
           return {
             key: k,
             pid: s?.pid ?? null,
@@ -1824,6 +1852,7 @@ export function createApi(opts: ApiOptions = {}): {
             bitrateKbps: s?.lastBitrateKbps ?? null,
             lastProgressAt: s?.lastProgressAt ?? null,
             stale: tm.isStale(k),
+            waiting,
             crashes: s?.crashCount ?? 0,
           };
         }),

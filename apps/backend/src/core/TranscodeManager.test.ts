@@ -95,6 +95,17 @@ describe('TranscodeManager', () => {
     assert.equal(m.recentCrashes('a', 5 * 60 * 1000), 0); // đã prune ở trên
   });
 
+  it('crash tích lũy qua nhiều lần restart (guard đếm được, không reset về 1)', async () => {
+    const bin = script('die.sh', 'exit 1');
+    const m = new TranscodeManager({ ffmpegBin: bin, killTimeoutMs: 500, progressTimeoutMs: 10000 });
+    m.setHandlers({ onStatus: () => {}, onExit: () => {} });
+    for (let i = 0; i < 3; i++) {
+      m.start('a', []);
+      await waitFor(m, 'exit');
+    }
+    assert.equal(m.recentCrashes('a', 5 * 60 * 1000), 3);
+  });
+
   it('double start ném lỗi; stop key lạ resolve im lặng', async () => {
     const bin = script('sleep.sh', 'exec sleep 60');
     const m = new TranscodeManager({ ffmpegBin: bin, killTimeoutMs: 500, progressTimeoutMs: 10000 });
