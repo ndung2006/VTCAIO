@@ -19,8 +19,17 @@
 #   sh scripts/gen-conf.sh --source TS8 --input "ip 239.69.69.10:1234" \
 #     --channel "DongNai1:2004:1" --channel "LaoCai:2005:1" --record-all 1
 #   cat storage/conf/DEMO.conf
+#
+# SONG SONG VỚI HỆ CŨ: path live/capture lấy từ ENV (PORT 1-1 với Node
+# ConfigGenerator: VTC_LIVE_DIR / VTC_CAPTURE_DIR). Trong container VTCAIO
+# ENV đã là /media/ramdisk/vtcaio + /mnt/Data/vtcaio/captures; chạy tay
+# ngoài container mà thiếu ENV thì fallback về path VTCAIO dưới đây.
 # ==============================================================================
 set -eu
+
+# Đường live/capture (đồng bộ với Node qua ENV, fallback về path VTCAIO).
+VTC_LIVE_DIR="${VTC_LIVE_DIR:-/media/ramdisk/vtcaio}"
+VTC_CAPTURE_DIR="${VTC_CAPTURE_DIR:-/mnt/Data/vtcaio/captures}"
 
 SOURCE=""; INPUT=""; RECORD_ALL=1
 CHANNELS=""
@@ -77,13 +86,13 @@ fi
         sid=$(printf '%s' "$c" | awk -F: '{print $2}')
         is_live=$(printf '%s' "$c" | awk -F: '{print $3}')
         if [ "$is_live" = "1" ]; then
-            printf -- '-P\nfork\ntsp -P zap %s -O hls --duration 5 --live 5 --playlist /media/ramdisk/live/%s/index.m3u8 /media/ramdisk/live/%s/segment.ts\n' \
-                "$sid" "$name" "$name"
+            printf -- '-P\nfork\ntsp -P zap %s -O hls --duration 5 --live 5 --playlist %s/%s/index.m3u8 %s/%s/segment.ts\n' \
+                "$sid" "$VTC_LIVE_DIR" "$name" "$VTC_LIVE_DIR" "$name"
         fi
     done
     if [ "$RECORD_ALL" = "1" ]; then
         # VoD (không --live): giữ toàn bộ segment. --live N tự xóa cũ, --live 0 bị cấm từ 3.44.
-        printf -- '-O\nhls\n--duration\n60\n/mnt/Data/catchup/captures/%s/catchup.ts\n' "$SOURCE"
+        printf -- '-O\nhls\n--duration\n60\n%s/%s/catchup.ts\n' "$VTC_CAPTURE_DIR" "$SOURCE"
     else
         printf -- '-O\ndrop\n'
     fi

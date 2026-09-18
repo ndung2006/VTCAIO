@@ -6,13 +6,15 @@
 #
 # Prod single-node (bắt multicast thật, xem docs/11-DEPLOY.md trước):
 #   1. sh scripts/prod-check.sh            # kernel + mount + IP
-#   2. sudo mount tmpfs /media/ramdisk/live (scripts/mount-ramdisk.sh)
+#   2. sudo sh scripts/mount-ramdisk.sh (tmpfs /media/ramdisk/vtcaio)
 #   3. cp .env.prod.example .env.prod rồi điền secret
 #   4. docker compose --profile prod up -d --build
 #
 # Backend chạy network_mode:host để tsp con kế thừa namespace và bắt
-# multicast trực tiếp từ switch (PRD §11). Đánh đổi: port 18080 chiếm trên host
-# (không dùng 8080 vì trùng dashboard Traefik khi chạy cùng Coolify).
+# multicast trực tiếp từ switch (PRD §11). Đánh đổi: port 18081 chiếm trên host
+# (hệ cũ giữ 18080; không dùng 8080 vì trùng dashboard Traefik khi chạy cùng Coolify).
+
+name: vtcaio
 
 services:
   #-- Dev: vọc TSDuck CLI/plugin đúng cách ------------------------------------
@@ -20,8 +22,8 @@ services:
     build:
       context: .
       dockerfile: docker/Dockerfile.tsduck
-    image: vtc-tsduck:22.04
-    container_name: vtc-tsduck
+    image: vtcaio-tsduck:22.04
+    container_name: vtcaio-tsduck
     init: true # tini thu dọn orphan — chống Zombie khi fork con mồ côi
     command: ["sleep", "infinity"]
     volumes:
@@ -34,13 +36,14 @@ services:
     profiles: ["demo", "tsduck"]
     # network_mode: "host"  # Bật khi test multicast thật ở LAN
 
-  #-- Dev: Nginx mini serve ./storage/ramdisk để xem HLS ở :8081 ---------------
+  #-- Dev: Nginx mini serve ./storage/ramdisk để xem HLS ở :8083 ---------------
   # (next dev không serve /hls — cần static server này khi demo Live local).
+  # Hệ cũ dùng :8081 nên VTCAIO dùng :8083 để chạy song song.
   demo-hls:
     image: nginx:1.27-alpine
-    container_name: vtc-demo-hls
+    container_name: vtcaio-demo-hls
     ports:
-      - "8081:80"
+      - "8083:80"
     volumes:
       - ./docker/nginx.demo.conf:/etc/nginx/conf.d/default.conf:ro
       - ./storage/ramdisk:/media/ramdisk/live:ro
@@ -53,8 +56,8 @@ services:
     build:
       context: .
       dockerfile: apps/backend/Dockerfile
-    image: vtc-backend:latest
-    container_name: vtc-backend
+    image: vtcaio-backend:latest
+    container_name: vtcaio-backend
     init: true
     network_mode: "host"
     extra_hosts:
@@ -63,7 +66,7 @@ services:
       - path: .env.prod
         required: false # thiếu thì dùng default dev (có WARN trong log)
     environment:
-      PORT: "18080"
+      PORT: "18081"
       VTC_GC_ENABLE: "1"
     volumes:
       - ramdisk:/media/ramdisk/live
@@ -78,22 +81,23 @@ services:
     build:
       context: .
       dockerfile: apps/frontend/Dockerfile
-    image: vtc-frontend:latest
-    container_name: vtc-frontend
+    image: vtcaio-frontend:latest
+    container_name: vtcaio-frontend
     init: true
     environment:
-      VTC_API_ORIGIN: "http://host.docker.internal:18080"
+      VTC_API_ORIGIN: "http://host.docker.internal:18081"
     restart: unless-stopped
     profiles: ["prod"]
 
-  #-- Prod: Nginx cửa vào duy nhất (:80) ---------------------------------------
+  #-- Prod: Nginx cửa vào duy nhất (:8082) ------------------------------------
+  # Hệ cũ giữ :80 nên VTCAIO dùng :8082 để chạy song song cùng host.
   nginx:
     image: nginx:1.27-alpine
-    container_name: vtc-nginx
+    container_name: vtcaio-nginx
     extra_hosts:
       - "host.docker.internal:host-gateway"
     ports:
-      - "80:80"
+      - "8082:80"
     volumes:
       - ./docker/nginx.conf:/etc/nginx/conf.d/default.conf:ro
       - ramdisk:/media/ramdisk/live:ro

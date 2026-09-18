@@ -1,15 +1,25 @@
 # Prod overrides — KHÔNG commit file này khi chứa secret thật.
 # Dùng: docker compose --profile prod -f docker-compose.yml -f compose.prod.yml up -d
+# VTCAIO dùng path riêng (hệ cũ giữ /media/ramdisk/live + /mnt/Data/catchup/* +
+# /opt/vtc/conf/sources) để chạy song song lâu dài.
 services:
   backend:
+    environment:
+      # BẮT BUỘC khớp với volume bên dưới — không thì backend ghi vào named
+      # volume cũ (/media/ramdisk/live) còn nginx serve tmpfs host → đen màn hình.
+      PORT: "18081"
+      VTC_CONF_DIR: /opt/vtcaio/conf/sources
+      VTC_CAPTURE_DIR: /mnt/Data/vtcaio/captures
+      VTC_EXPORTS_DIR: /mnt/Data/vtcaio/exports
+      VTC_LIVE_DIR: /media/ramdisk/vtcaio
     volumes:
       # Ghi đè volume captures bằng HDD/SAN thật:
-      - /mnt/Data/catchup/captures:/mnt/Data/catchup/captures
-      - /mnt/Data/catchup/exports:/mnt/Data/catchup/exports
-      - /opt/vtc/conf/sources:/opt/vtc/conf/sources
+      - /mnt/Data/vtcaio/captures:/mnt/Data/vtcaio/captures
+      - /mnt/Data/vtcaio/exports:/mnt/Data/vtcaio/exports
+      - /opt/vtcaio/conf/sources:/opt/vtcaio/conf/sources
       # RAMDisk host (tmpfs đã mount) — khớp nginx bên dưới, nếu không backend
       # ghi HLS vào volume rỗng còn nginx serve tmpfs → đen màn hình.
-      - /media/ramdisk/live:/media/ramdisk/live
+      - /media/ramdisk/vtcaio:/media/ramdisk/vtcaio
   nginx:
     volumes:
-      - /media/ramdisk/live:/media/ramdisk/live:ro
+      - /media/ramdisk/vtcaio:/media/ramdisk/vtcaio:ro

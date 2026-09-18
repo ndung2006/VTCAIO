@@ -34,11 +34,13 @@ COPY plugins/vtcmonitor /tmp/vtcmonitor
 RUN cd /tmp/vtcmonitor && make && make install && rm -rf /tmp/vtcmonitor \
     && node --version && tsp --version && tsp -P vtcmonitor --help >/dev/null
 
-# 3. Thư mục chuẩn VTC (trùng path trong code).
-RUN mkdir -p /media/ramdisk/live \
-             /mnt/Data/catchup/captures \
-             /mnt/Data/catchup/exports \
-             /opt/vtc/conf/sources \
+# 3. Thư mục chuẩn VTCAIO (TÁCH RIÊNG khỏi hệ cũ để chạy song song lâu dài:
+# hệ cũ dùng /media/ramdisk/live + /mnt/Data/catchup/* + /opt/vtc/conf/sources.
+# Code Node đọc qua ENV nên đổi ở đây là conf/store/GC/exporter ăn theo).
+RUN mkdir -p /media/ramdisk/vtcaio \
+             /mnt/Data/vtcaio/captures \
+             /mnt/Data/vtcaio/exports \
+             /opt/vtcaio/conf/sources \
              /app/storage/logs \
              /app
 
@@ -50,16 +52,16 @@ RUN npm ci
 COPY apps/backend/src ./src
 RUN ./node_modules/.bin/tsc -p tsconfig.json && npm prune --omit=dev
 
-# PORT 18080 (không dùng 8080: trùng dashboard Traefik của Coolify trên host,
-# backend host-network bind trực tiếp cổng host nên phải tránh).
-ENV PORT=18080 \
-    VTC_CONF_DIR=/opt/vtc/conf/sources \
-    VTC_CAPTURE_DIR=/mnt/Data/catchup/captures \
-    VTC_EXPORTS_DIR=/mnt/Data/catchup/exports \
-    VTC_LIVE_DIR=/media/ramdisk/live \
+# PORT 18081 (hệ cũ VTCCatchup giữ 18080; backend host-network bind trực tiếp
+# cổng host nên 2 hệ phải khác nhau. Không dùng 8080: trùng dashboard Traefik).
+ENV PORT=18081 \
+    VTC_CONF_DIR=/opt/vtcaio/conf/sources \
+    VTC_CAPTURE_DIR=/mnt/Data/vtcaio/captures \
+    VTC_EXPORTS_DIR=/mnt/Data/vtcaio/exports \
+    VTC_LIVE_DIR=/media/ramdisk/vtcaio \
     VTC_LOG_DIR=/app/storage/logs \
     VTC_GC_ENABLE=1
 
-EXPOSE 18080
-HEALTHCHECK --interval=30s --timeout=5s CMD node -e "fetch('http://127.0.0.1:'+(process.env.PORT||18080)+'/health').then(r=>{if(!r.ok)process.exit(1)})" || exit 1
+EXPOSE 18081
+HEALTHCHECK --interval=30s --timeout=5s CMD node -e "fetch('http://127.0.0.1:'+(process.env.PORT||18081)+'/health').then(r=>{if(!r.ok)process.exit(1)})" || exit 1
 CMD ["node", "dist/server.js"]

@@ -11,7 +11,7 @@
 #   docker compose -f docker-compose.catchup.yml build backend
 #   docker compose -f docker-compose.catchup.yml up -d backend
 #
-# Điều kiện trước (xem docs/13-ROI-COOLIFY.md): tmpfs /media/ramdisk/live đã
+# Điều kiện trước (xem docs/13-ROI-COOLIFY.md): tmpfs /media/ramdisk/vtcaio đã
 # mount, tuyến multicast 239.x đã ghim netplan, .env.prod đã điền.
 
 name: vtcaio
@@ -30,18 +30,16 @@ services:
       - path: .env.prod
         required: false # thiếu thì dùng default dev (có WARN trong log)
     environment:
-      PORT: "18080" # trùng dashboard Traefik :8080 thì đổi, nhưng phải cùng
+      PORT: "18081" # hệ cũ VTCCatchup giữ 18080 — host-network nên phải khác nhau
       VTC_GC_ENABLE: "1"
     volumes:
-      # RAMDisk live (host mount tmpfs trước) + HDD catchup + conf + log.
-      # Đường dẫn host PHẢI tồn tại trước khi up (xem docs/13-ROI-COOLIFY.md).
-      # Đổi ổ đĩa (VD ổ E: qua drvfs /mnt/e) thì đặt 2 biến host dưới đây trong
-      # .env.prod — đường dẫn TRONG container giữ nguyên nên conf/exporter/GC
-      # không phải sửa gì, chunk cũ chuyển sang là timeshift/export vẫn đúng giờ.
-      - /media/ramdisk/live:/media/ramdisk/live
-      - ${VTC_HOST_CAPTURE_DIR:-/mnt/Data/catchup/captures}:/mnt/Data/catchup/captures
-      - ${VTC_HOST_EXPORTS_DIR:-/mnt/Data/catchup/exports}:/mnt/Data/catchup/exports
-      - /opt/vtc/conf/sources:/opt/vtc/conf/sources
+      # TÁCH RIÊNG khỏi hệ cũ để chạy song song lâu dài (host path khác hẳn):
+      # hệ cũ: /media/ramdisk/live, /mnt/Data/catchup/*, /opt/vtc/conf/sources.
+      # Đường TRONG container giữ đồng bộ với ENV trong Dockerfile.backend.
+      - /media/ramdisk/vtcaio:/media/ramdisk/vtcaio
+      - ${VTC_HOST_CAPTURE_DIR:-/mnt/Data/vtcaio/captures}:/mnt/Data/vtcaio/captures
+      - ${VTC_HOST_EXPORTS_DIR:-/mnt/Data/vtcaio/exports}:/mnt/Data/vtcaio/exports
+      - /opt/vtcaio/conf/sources:/opt/vtcaio/conf/sources
       - /var/log/vtcaio:/app/storage/logs
     # KHÔNG đặt CPU quota: throttle cgroup chèn khoảng lặng vào luồng TS,
     # watchdog/CC-error sẽ đọc thành "mất nguồn". Giới hạn RAM thì vô hại.
