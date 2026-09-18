@@ -1,6 +1,6 @@
 # 12 — YÊU CẦU HỆ THỐNG & HƯỚNG DẪN TRIỂN KHAI (HW / OS / SW)
 
-> Áp dụng cho VTCCatchup sau rà soát. Hệ thống **remux-only** (không transcode,
+> Áp dụng cho VTCAIO sau rà soát. Hệ thống **remux-only** (không transcode,
 > không cần GPU) nên yêu cầu phần cứng thấp — tốn nhất là **ổ cứng lưu chiểu**.
 
 ---
@@ -116,7 +116,7 @@ khi lên Phase 2b multi-node).
 ### A. Demo trên laptop (15 phút, không cần multicast)
 
 ```sh
-git clone <repo> && cd VTCCatchup
+git clone <repo> && cd VTCAIO
 docker compose --profile demo up -d --build
 docker compose exec tsduck tsp --version
 docker compose exec tsduck sh /work/scripts/demo-cli.sh        # Live + catchup mẫu

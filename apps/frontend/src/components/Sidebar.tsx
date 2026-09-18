@@ -9,16 +9,16 @@ import { useEffect, useState } from 'react';
 import { api, type Source } from '@/lib/api';
 import { useMe } from '@/lib/role';
 
-/** Logo VTC Catchup (file: apps/frontend/public/logo-vtc-catchup.svg). */
+/** Logo VTCAIO (file: apps/frontend/public/logo-vtcaio.svg). */
 function BrandLogo(): React.JSX.Element {
   const [broken, setBroken] = useState(false);
-  if (broken) return <span className="font-bold text-white">VTC Catchup</span>;
+  if (broken) return <span className="font-bold text-white">VTCAIO</span>;
   return (
     <span className="flex items-center gap-2 px-1 py-1">
       {/* eslint-disable-next-line @next/next/no-img-element */}
       <img
-        src="/logo-vtc-catchup.svg"
-        alt="VTC Catchup"
+        src="/logo-vtcaio.svg"
+        alt="VTCAIO"
         className="h-10 w-auto"
         onError={() => setBroken(true)}
       />

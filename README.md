@@ -1,4 +1,4 @@
-# VTCCatchup — Hệ thống Lưu chiểu & Giám sát Phát sóng trực tuyến
+# VTCAIO — Hệ thống Lưu chiểu & Giám sát Phát sóng trực tuyến
 (Hệ thống Catchup và xem lại các kênh phát sóng của VTC)
 
 > Monorepo rebuild từ PRD 17 phần. Mục tiêu: **1 Source = 1 Process 24/7, không Zombie, không rò RAM.**
@@ -6,7 +6,7 @@
 ## Cấu trúc thư mục
 
 ```
-VTCCatchup/
+VTCAIO/
 ├── README.md                    # File này
 ├── docs/
 │   ├── 01-BRAINSTORM.md         # Nghiên cứu + brainstorm chi tiết (ĐỌC TRƯỚC)

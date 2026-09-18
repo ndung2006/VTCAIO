@@ -1,4 +1,4 @@
-# 01 — BRAINSTORM: Hệ thống Lưu chiểu & Live Streaming (VTCCatchup)
+# 01 — BRAINSTORM: Hệ thống Lưu chiểu & Live Streaming (VTCAIO)
 
 Ngày brainstorm: 2026-09-12 | Nguồn: PRD 17 phần | Trạng thái: Sẵn sàng đưa vào code Phase 1
 

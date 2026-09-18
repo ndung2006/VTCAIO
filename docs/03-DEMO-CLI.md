@@ -5,7 +5,7 @@
 ## 1. Build & vào container (Ubuntu 22.04 + TSDuck chính thức)
 
 ```sh
-cd /workspace/VTCCatchup
+cd /workspace/VTCAIO
 docker compose up -d --build tsduck
 docker compose exec tsduck tsp --version
 ```
@@ -39,7 +39,7 @@ sh scripts/check-zombie.sh --watch
 Start/Stop 10 lần rồi check lại — `zombie` phải luôn `0`.
 Hệ cũ sai ở `--max-duration 60` (tự sát cha mỗi phút) → con `fork` mồ côi.
 
-## 4. Ánh xạ sang VTCCatchup thật
+## 4. Ánh xạ sang VTCAIO thật
 
 | Demo | Prod (MPTS multicast) |
 |---|---|

@@ -1,4 +1,4 @@
-# VTCCatchup — Full stack (dev demo + Prod single-node).
+# VTCAIO — Full stack (dev demo + Prod single-node).
 #
 # Demo trên laptop (không cần multicast, dùng file mẫu):
 #   docker compose --profile demo up --build

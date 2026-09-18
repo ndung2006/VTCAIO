@@ -1,4 +1,4 @@
-# VTCCatchup backend — chạy NGOÀI Coolify (plain docker compose + systemd).
+# VTCAIO backend — chạy NGOÀI Coolify (plain docker compose + systemd).
 #
 # Vì sao file riêng (không dùng docker-compose.yml + compose.prod.yml cũ):
 # backend là mặt bắt tín hiệu 24/7, bắt buộc network_mode: host để tsp thấy
@@ -14,15 +14,15 @@
 # Điều kiện trước (xem docs/13-ROI-COOLIFY.md): tmpfs /media/ramdisk/live đã
 # mount, tuyến multicast 239.x đã ghim netplan, .env.prod đã điền.
 
-name: vtccatchup
+name: vtcaio
 
 services:
   backend:
     build:
       context: .
       dockerfile: Dockerfile.backend
-    image: vtccatchup-backend:local
-    container_name: vtccatchup-backend
+    image: vtcaio-backend:local
+    container_name: vtcaio-backend
     # Multicast KHÔNG đi qua bridge: NAT không xử lý multicast và
     # --local-address trong bridge chỉ thấy veth, không thấy card thật.
     network_mode: host
@@ -42,7 +42,7 @@ services:
       - ${VTC_HOST_CAPTURE_DIR:-/mnt/Data/catchup/captures}:/mnt/Data/catchup/captures
       - ${VTC_HOST_EXPORTS_DIR:-/mnt/Data/catchup/exports}:/mnt/Data/catchup/exports
       - /opt/vtc/conf/sources:/opt/vtc/conf/sources
-      - /var/log/vtccatchup:/app/storage/logs
+      - /var/log/vtcaio:/app/storage/logs
     # KHÔNG đặt CPU quota: throttle cgroup chèn khoảng lặng vào luồng TS,
     # watchdog/CC-error sẽ đọc thành "mất nguồn". Giới hạn RAM thì vô hại.
     mem_limit: 2g

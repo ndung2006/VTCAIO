@@ -24,7 +24,7 @@ export default function Login(): React.JSX.Element {
   return (
     <main className="flex min-h-screen items-center justify-center">
       <form onSubmit={submit} className="w-80 space-y-3 rounded-xl bg-white p-6 shadow">
-        <h1 className="text-lg font-bold">VTC Catchup — Đăng nhập</h1>
+        <h1 className="text-lg font-bold">VTCAIO — Đăng nhập</h1>
         <input
           value={username}
           onChange={(e) => setUsername(e.target.value)}

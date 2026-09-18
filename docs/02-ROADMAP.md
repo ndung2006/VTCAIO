@@ -58,7 +58,7 @@
 
 ```bash
 # 1. Khởi tạo backend tối thiểu
-cd /workspace/VTCCatchup/apps/backend && npm init -y && npm i typescript tsx @types/node
+cd /workspace/VTCAIO/apps/backend && npm init -y && npm i typescript tsx @types/node
 # 2. Viết ConfigGenerator + test in conf ra storage/conf/sources/demo.conf
 # 3. Viết ProcessManager + test Start/Stop với tsp thật (hoặc sleep giả lập nếu chưa có tsp)
 ```

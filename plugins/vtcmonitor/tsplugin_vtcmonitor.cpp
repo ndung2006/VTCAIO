@@ -1,5 +1,5 @@
 //=============================================================================
-// TSDuck plugin "vtcmonitor" — Giám sát CC-error / mất tín hiệu cho VTCCatchup.
+// TSDuck plugin "vtcmonitor" — Giám sát CC-error / mất tín hiệu cho VTCAIO.
 //
 // Chức năng:
 //  - Đếm tổng số packet (tùy chọn lọc 1 PID qua --pid).
@@ -61,7 +61,7 @@ TS_REGISTER_PROCESSOR_PLUGIN(u"vtcmonitor", ts::VtcMonitor);
 // Constructor: khai báo option + help (chuẩn TSDuck).
 //-----------------------------------------------------------------------------
 ts::VtcMonitor::VtcMonitor(TSP* tsp_) :
-    ProcessorPlugin(tsp_, u"VTC catchup monitor: count packets and detect CC errors", u"[options]")
+    ProcessorPlugin(tsp_, u"VTCAIO monitor: count packets and detect CC errors", u"[options]")
 {
     option(u"pid", 'p', PIDVAL);
     help(u"pid", u"Only monitor this PID. Default: monitor all PIDs.");

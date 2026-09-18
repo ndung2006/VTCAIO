@@ -1,4 +1,4 @@
-# Plugin `vtcmonitor` — Giám sát CC-error cho VTCCatchup
+# Plugin `vtcmonitor` — Giám sát CC-error cho VTCAIO
 
 > Code sạch, comment rõ, tuân thủ style TSDuck (`ProcessorPlugin`, `TS_REGISTER...`, `option()/help()/info()/warning()/verbose()`).
 
@@ -27,7 +27,7 @@ docker compose exec tsduck sh /work/scripts/demo-monitor.sh
 Kỳ vọng output: dòng `vtcmonitor: total=... packets, cc-errors=...`.
 File mẫu test lặp 2 lần có thể báo vài CC-error ở điểm nối — đó là hành vi đúng để test alert.
 
-## Tích hợp VTCCatchup
+## Tích hợp VTCAIO
 
 - Chèn vào pipeline Prod trước fork HLS để bắt lỗi sớm:
   `tsp -I ip ... -P vtcmonitor -P zap ... -P fork ... -O hls ...`

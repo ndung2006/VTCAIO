@@ -1,12 +1,12 @@
 [Unit]
-Description=VTCCatchup backend — mat bat tin hieu 24/7 (ngoai Coolify)
+Description=VTCAIO backend — mat bat tin hieu 24/7 (ngoai Coolify)
 Requires=docker.service
 After=docker.service network-online.target
 
 [Service]
 Type=oneshot
 RemainAfterExit=yes
-WorkingDirectory=/srv/vtccatchup/repo
+WorkingDirectory=/srv/vtcaio/repo
 ExecStart=/usr/bin/docker compose -f docker-compose.catchup.yml up -d backend
 ExecStop=/usr/bin/docker compose -f docker-compose.catchup.yml stop backend
 

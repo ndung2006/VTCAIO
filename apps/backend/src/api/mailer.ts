@@ -39,9 +39,9 @@ export async function sendResetMail(email: string, token: string): Promise<MailR
           : undefined,
     });
     await transporter.sendMail({
-      from: process.env['VTC_SMTP_FROM'] ?? 'VTC Catchup <no-reply@vtctech.xyz>',
+      from: process.env['VTC_SMTP_FROM'] ?? 'VTCAIO <no-reply@vtctech.xyz>',
       to: email,
-      subject: 'Khôi phục mật khẩu VTC Catchup',
+      subject: 'Khôi phục mật khẩu VTCAIO',
       text: `Link khôi phục (hiệu lực 15 phút, dùng 1 lần):\n${link}`,
     });
     logger.info(`đã gửi mail reset cho ${email}`);

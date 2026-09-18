@@ -1,5 +1,5 @@
 //=============================================================================
-// auth.ts — Xác thực JWT + bcrypt cho VTCCatchup (PRD §4.8).
+// auth.ts — Xác thực JWT + bcrypt cho VTCAIO (PRD §4.8).
 //  - Mật khẩu: bcrypt hash, saltRounds = 10. KHÔNG bao giờ lưu plaintext.
 //  - Token: JWT HS256 trong HttpOnly Cookie (chống XSS), không localStorage.
 //  - Quên MK: message chung chung (chống enumerate email), reset token TTL 15'.

@@ -1,6 +1,6 @@
 #!/bin/sh
 # ==============================================================================
-# VTCCatchup Demo B1 — TSDuck CLI đúng cách (Live HLS + Catchup song song)
+# VTCAIO Demo B1 — TSDuck CLI đúng cách (Live HLS + Catchup song song)
 # POSIX sh (chạy được trên Alpine/sh và Ubuntu/bash).
 #
 # Cách dùng ĐÚNG (1 process 24/7, không --max-duration):

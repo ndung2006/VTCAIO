@@ -1,7 +1,7 @@
 import type { Metadata } from 'next';
 import './globals.css';
 
-export const metadata: Metadata = { title: 'VTC Catchup' };
+export const metadata: Metadata = { title: 'VTCAIO' };
 
 // Layout: Sidebar dark + Header light + Workspace xám (PRD §4.1).
 // Trang /login render riêng (không sidebar) — xử lý trong từng page.
