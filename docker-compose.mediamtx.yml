@@ -1,0 +1,26 @@
+# MediaMTX sidecar — RTMP server nhận push-in (docs/16 §5).
+# Chạy CÙNG backend (CPU hoặc GPU đều được), compose riêng để bật/tắt độc lập:
+#   MTX_PUBLISH_PASS=mat-khau-manh docker compose -f docker-compose.mediamtx.yml up -d
+# Đối tác push: rtmp://publisher:<pass>@<ip-host>:1935/<streamKey> (key/backend
+# rtmp-in đấu ở T3-wiring; hiện tại nhận + giữ để test/failover).
+
+name: vtcaio
+
+services:
+  mediamtx:
+    image: bluenviron/mediamtx:v1.9.3
+    container_name: vtcaio-mediamtx
+    restart: unless-stopped
+    init: true
+    ports:
+      - "1935:1935" # RTMP push-in từ đối tác (TCP)
+    environment:
+      TZ: Asia/Ho_Chi_Minh
+      # Ghi đè pass trong mediamtx.yml (cú pháp MTX_ của mediamtx).
+      # KHÔNG để default khi lên Prod — check ở scripts/prod-check.sh.
+      MTX_AUTHINTERNALUSERS_0_PASS: ${MTX_PUBLISH_PASS:-doi-pass-manh-o-env}
+    volumes:
+      - ./mediamtx/mediamtx.yml:/mediamtx.yml:ro
+    logging:
+      driver: json-file
+      options: { max-size: "20m", max-file: "5" }

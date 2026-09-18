@@ -1,0 +1,54 @@
+# VTCAIO backend GPU (NVENC) — chạy NGOÀI Coolify, THAY backend CPU.
+#
+# Dùng image Dockerfile.backend-gpu (CUDA runtime + ffmpeg có h264_nvenc).
+# Chỉ dùng trên máy có GPU NVIDIA + driver + NVIDIA Container Toolkit.
+# KHÔNG chạy cùng lúc với docker-compose.catchup.yml (cả 2 bind PORT 18081
+# host-network) — chọn 1 trong 2:
+#   CPU: docker compose -f docker-compose.catchup.yml up -d backend
+#   GPU: docker compose -f docker-compose.transcode-gpu.yml up -d backend-gpu
+#
+# Dùng:
+#   cp .env.prod.example .env.prod   # điền secret (file này ngoài git)
+#   docker compose -f docker-compose.transcode-gpu.yml build backend-gpu
+#   docker compose -f docker-compose.transcode-gpu.yml up -d backend-gpu
+#
+# Điều kiện trước: tmpfs /media/ramdisk/vtcaio, tuyến multicast 239.x,
+# .env.prod, VÀ nvidia-smi chạy được + nvidia-container-runtime đã cài
+# (xem scripts/prod-check.sh §6).
+
+name: vtcaio
+
+services:
+  backend-gpu:
+    build:
+      context: .
+      dockerfile: Dockerfile.backend-gpu
+    image: vtcaio-backend-gpu:local
+    container_name: vtcaio-backend-gpu
+    # Multicast KHÔNG đi qua bridge (giống backend CPU) + GPU passthrough.
+    network_mode: host
+    # NVIDIA Container Toolkit: thấy GPU trong container host-network.
+    gpus: all
+    env_file:
+      - path: .env.prod
+        required: false # thiếu thì dùng default dev (có WARN trong log)
+    environment:
+      PORT: "18081" # THAY backend CPU — không chạy 2 backend cùng lúc
+      VTC_GC_ENABLE: "1"
+      NVIDIA_VISIBLE_DEVICES: "all"
+    volumes:
+      # TÁCH RIÊNG khỏi hệ cũ (giống backend CPU — 2 image thay thế nhau,
+      # volume host dùng chung vì không bao giờ chạy cùng lúc).
+      - /media/ramdisk/vtcaio:/media/ramdisk/vtcaio
+      - ${VTC_HOST_CAPTURE_DIR:-/mnt/Data/vtcaio/captures}:/mnt/Data/vtcaio/captures
+      - ${VTC_HOST_EXPORTS_DIR:-/mnt/Data/vtcaio/exports}:/mnt/Data/vtcaio/exports
+      - /opt/vtcaio/conf/sources:/opt/vtcaio/conf/sources
+      - /var/log/vtcaio:/app/storage/logs
+    # KHÔNG đặt CPU quota (giống backend CPU — throttle chèn khoảng lặng vào TS).
+    mem_limit: 2g
+    stop_grace_period: 15s # cho tsp SIGTERM dọn file HLS đang ghi
+    restart: unless-stopped
+    init: true
+    logging:
+      driver: json-file
+      options: {max-size: "20m", max-file: "5"}

@@ -1,0 +1,27 @@
+# MediaMTX — RTMP server nhận push-in từ đối tác (docs/16 §5, T3-infra).
+# Phase hiện tại: CHỈ bật RTMP :1935 (nhận push). Các protocol khác (RTSP/HLS/
+# WebRTC/SRT) tắt để giảm mặt tấn công — mở thêm khi T3 cần.
+# Đẩy ingest từ mediamtx vào pipeline TSDuck (puller ffmpeg) đấu ở T3-wiring;
+# hiện tại sidecar đứng sẵn để đối tác test push + lấy tín hiệu.
+logLevel: info
+
+# Bật đúng 1 protocol (không khai address = tắt):
+rtmpAddress: :1935
+
+# Publish phải có user/pass (đối tác push sai key là 403, log thấy ngay).
+# Pass THẬT đặt qua env MTX_AUTHINTERNALUSERS_0_PASS (xem
+# docker-compose.mediamtx.yml) — giá trị dưới đây chỉ là placeholder để
+# file chạy được ngay ở lab.
+authInternalUsers:
+  - user: publisher
+    pass: doi-pass-manh-o-env
+    permissions:
+      - action: publish
+      - action: read
+      - action: playback
+
+# Mọi stream key đều nhận (source: publisher) — phân biệt kênh bằng key.
+# URL đối tác push: rtmp://publisher:<pass>@<ip-host>:1935/<streamKey>
+paths:
+  all:
+    source: publisher

@@ -6,7 +6,7 @@
  // Endpoints auth: xem docs/07-AUTH.md.
  //=============================================================================
 import { createServer, type IncomingMessage, type ServerResponse } from 'node:http';
-import { spawn } from 'node:child_process';
+import { execFileSync, spawn } from 'node:child_process';
 import { createReadStream, existsSync, mkdirSync, readFileSync, renameSync, writeFileSync } from 'node:fs';
 import { stat } from 'node:fs/promises';
 import { dirname, join, sep } from 'node:path';
@@ -20,7 +20,19 @@ import {
 } from '../core/ConfigGenerator.js';
 import { scanStream, StreamScanError } from '../core/streamScan.js';
 import { ProcessManager } from '../core/ProcessManager.js';
+import { TranscodeManager } from '../core/TranscodeManager.js';
+import {
+  assertEngineAvailable,
+  assertLoopbackPort,
+  buildFfmpegArgs,
+  defaultPresets,
+  normalizeChannelTranscode,
+  parseOutput,
+  parseSecretsEnv,
+  TranscodeError,
+} from '../core/TranscodeConfigGenerator.js';
 import { Store, type SourceRecord } from './store.js';
+import { PresetStore } from './presetStore.js';
 import { snapshot } from './system.js';
 import {
   JWT_COOKIE,
@@ -52,7 +64,7 @@ import { Exporter, ExportError } from '../exporter/exporter.js';
 import { EpgClient, EpgError } from '../epg/client.js';
 import { EpgStore } from '../epg/store.js';
 import { syncNow, vnToday, type SyncMapping, type SyncStats } from '../epg/sync.js';
-import type { SourceConfig } from '../core/types.js';
+import type { ChannelConfig, ChannelTranscode, SourceConfig, TranscodePreset } from '../core/types.js';
 
 export interface ApiOptions {
   port?: number;
@@ -77,6 +89,18 @@ export interface ApiOptions {
   autoStart?: boolean;
   /** Inject fetch cho EPG client (test). Mặc định dùng fetch thật. */
   epgFetchFn?: typeof fetch;
+  /** Lệnh ffmpeg cho transcode (mặc định env VTC_FFMPEG_BIN hay "ffmpeg"). */
+  ffmpegBin?: string;
+  /** Lệnh srt-live-transmit cho nút srt-test (mặc định env VTC_SRT_BIN hay "srt-live-transmit"). */
+  srtBin?: string;
+  /** Ms chờ auto-restart ffmpeg sau crash (mặc định 2000, docs/16 §9.2). */
+  tcRestartDelayMs?: number;
+  /** Ms chờ tsp ổn định trước khi spawn ffmpeg (mặc định 1000, docs/16 §2.2). */
+  tcStartDelayMs?: number;
+  /** File JSON persist presets (mặc định <confDir>/presets.db.json). */
+  presetFile?: string;
+  /** Map ref→passphrase SRT (mặc định parse env VTC_SRT_PASSPHRASES). Test truyền trực tiếp. */
+  srtSecrets?: Record<string, string>;
 }
 
 /** Message chung cho login sai (không lộ user nào tồn tại). */
@@ -413,6 +437,240 @@ export function createApi(opts: ApiOptions = {}): {
       pendingRestarts.set(id, t);
     },
   });
+
+  //-- Transcode SRT/RTMP/UDP-mcast (docs/16): preset store + ffmpeg lifecycle --
+  const presetStore = new PresetStore();
+  const presetFile = opts.presetFile ?? `${dirname(storeFile)}/presets.db.json`;
+  function savePresets(): void {
+    if (!persistEnabled) return;
+    try {
+      mkdirSync(dirname(presetFile), { recursive: true });
+      const tmp = `${presetFile}.tmp`;
+      writeFileSync(tmp, JSON.stringify(presetStore.listPresets(), null, 2), 'utf8');
+      renameSync(tmp, presetFile);
+    } catch {
+      logger.warn(`không ghi được ${presetFile}`);
+    }
+  }
+  function loadPresets(): void {
+    if (persistEnabled) {
+      try {
+        if (existsSync(presetFile)) {
+          presetStore.replaceAll(JSON.parse(readFileSync(presetFile, 'utf8')) as unknown);
+        }
+      } catch {
+        // file hỏng → seed default bên dưới
+      }
+    }
+    presetStore.seedDefaults(defaultPresets());
+  }
+
+  const ffmpegBin = opts.ffmpegBin ?? process.env['VTC_FFMPEG_BIN'] ?? 'ffmpeg';
+  const srtBin = opts.srtBin ?? process.env['VTC_SRT_BIN'] ?? 'srt-live-transmit';
+  const srtSecrets: Record<string, string> =
+    opts.srtSecrets ?? parseSecretsEnv(process.env['VTC_SRT_PASSPHRASES'] ?? '');
+  const tm = new TranscodeManager({ ffmpegBin });
+  const tcKey = (sourceId: string, channel: string): string => `${sourceId}/${channel}`;
+  const tcRestartDelayMs = opts.tcRestartDelayMs ?? 2000; // docs/16 §9.2
+  const tcStartDelayMs = opts.tcStartDelayMs ?? Number(process.env['VTC_TC_START_DELAY_MS'] ?? 1000); // docs/16 §2.2
+  const noRestartTc = new Set<string>(); // key ffmpeg đang stop tay
+  const pendingTcRestarts = new Map<string, NodeJS.Timeout>();
+  const pendingTcStarts = new Map<string, NodeJS.Timeout[]>();
+
+  // Cache output `ffmpeg -encoders` để check engine (fail-fast nvenc, docs/16 §3.2).
+  let encodersCache: string | null = null;
+  function getEncodersText(): string {
+    if (encodersCache !== null) return encodersCache;
+    try {
+      encodersCache = execFileSync(ffmpegBin, ['-hide_banner', '-encoders'], {
+        timeout: 15000,
+        maxBuffer: 1_000_000,
+      }).toString();
+    } catch {
+      // Binary thiếu/chết → không check được, để spawn báo lỗi rõ. Không cache.
+      return '';
+    }
+    return encodersCache;
+  }
+  function checkEngineOrWarn(engine: ChannelTranscode['engine']): void {
+    const e = engine ?? 'cpu';
+    const txt = getEncodersText();
+    if (txt === '') {
+      logger.warn(`không đọc được ${ffmpegBin} -encoders — bỏ qua check engine ${e}`);
+      return;
+    }
+    assertEngineAvailable(e, txt);
+  }
+
+  /** Spawn ffmpeg cho 1 kênh (ném lỗi rõ để route trả 4xx/5xx). */
+  function startChannelTranscode(sourceId: string, ch: ChannelConfig): number {
+    const t = normalizeChannelTranscode(ch.transcode);
+    if (t === undefined || !t.enabled) throw new Error(`kênh ${ch.name} chưa bật transcode`);
+    if (t.presetIds.length === 0) throw new Error(`kênh ${ch.name} bật transcode nhưng chưa chọn preset nào`);
+    const presets = t.presetIds.map((id) => {
+      const p = presetStore.getPreset(id);
+      if (p === undefined) throw new Error(`kênh ${ch.name} trỏ preset "${id}" không tồn tại`);
+      return p;
+    });
+    checkEngineOrWarn(t.engine);
+    const args = buildFfmpegArgs({
+      channelName: ch.name,
+      loopbackPort: t.loopbackPort,
+      presets,
+      outputs: t.outputs.filter((o) => o.enabled),
+      engine: t.engine,
+      secrets: srtSecrets,
+    });
+    return tm.start(tcKey(sourceId, ch.name), args);
+  }
+
+  /** Hẹn spawn ffmpeg sau khi tsp ổn định (chống sốc UDP loopback). */
+  function scheduleTcStarts(sourceId: string): void {
+    cancelTcStarts(sourceId);
+    const rec = store.getSource(sourceId);
+    if (rec === undefined || rec.status !== 'RUNNING') return;
+    const enabled = rec.channels.filter((c) => c.transcode?.enabled === true);
+    if (enabled.length === 0) return;
+    const timers: NodeJS.Timeout[] = enabled.map((c) => {
+      const t = setTimeout(() => {
+        try {
+          startChannelTranscode(sourceId, c);
+          logger.info(`transcode ${sourceId}/${c.name} đã start`);
+        } catch (e) {
+          void notifier.alert(
+            `tc:${sourceId}/${c.name}`,
+            `Transcode ${c.name} start thất bại: ${e instanceof Error ? e.message : 'lỗi không rõ'}`,
+          );
+        }
+      }, tcStartDelayMs);
+      t.unref?.();
+      return t;
+    });
+    pendingTcStarts.set(sourceId, timers);
+  }
+
+  function cancelTcStarts(sourceId: string): void {
+    const arr = pendingTcStarts.get(sourceId);
+    if (arr !== undefined) {
+      for (const t of arr) clearTimeout(t);
+      pendingTcStarts.delete(sourceId);
+    }
+  }
+
+  /** Diệt mọi ffmpeg của source (ffmpeg trước, tsp sau — docs/16 §9.1). */
+  async function stopSourceTranscodes(sourceId: string): Promise<void> {
+    cancelTcStarts(sourceId);
+    const rec = store.getSource(sourceId);
+    const names = rec !== undefined ? rec.channels.map((c) => c.name) : [];
+    for (const n of names) {
+      const k = tcKey(sourceId, n);
+      noRestartTc.add(k);
+      try {
+        await tm.stop(k);
+      } finally {
+        noRestartTc.delete(k);
+      }
+      const p = pendingTcRestarts.get(k);
+      if (p !== undefined) {
+        clearTimeout(p);
+        pendingTcRestarts.delete(k);
+      }
+    }
+  }
+
+  tm.setHandlers({
+    onStatus: () => {
+      // Status transcode đọc trực tiếp từ tm.snapshot ở endpoint — không cần store.
+    },
+    onExit: (key, code, signal) => {
+      if (noRestartTc.has(key)) return; // stop tay — không restart
+      const slash = key.indexOf('/');
+      if (slash < 0) return;
+      const sid = key.slice(0, slash);
+      const chName = key.slice(slash + 1);
+      const rec = store.getSource(sid);
+      const ch = rec?.channels.find((c) => c.name === chName);
+      if (rec === undefined || rec.status !== 'RUNNING' || ch === undefined || ch.transcode?.enabled !== true) return;
+      const crashes = tm.recentCrashes(key, 5 * 60 * 1000);
+      const why = signal !== null ? `signal ${signal}` : `mã ${String(code)}`;
+      if (crashes > 3) {
+        // Crash liên tục (>3 lần/5 phút) → dừng hẳn + Telegram, chờ operator.
+        void notifier.alert(
+          `tc:${key}`,
+          `Transcode ${chName} crash ${crashes} lần/5 phút (${why}) — DỪNG HẲN, chờ operator kiểm tra.`,
+        );
+        return;
+      }
+      void notifier.alert(
+        `tc:${key}`,
+        `Transcode ${chName} dừng đột ngột (${why}) — restart sau ${tcRestartDelayMs}ms (lần ${crashes}/3).`,
+      );
+      const t = setTimeout(() => {
+        pendingTcRestarts.delete(key);
+        const r2 = store.getSource(sid);
+        const c2 = r2?.channels.find((c) => c.name === chName);
+        if (r2 === undefined || r2.status !== 'RUNNING' || c2 === undefined || c2.transcode?.enabled !== true) return;
+        if (tm.isRunning(key)) return;
+        try {
+          startChannelTranscode(sid, c2);
+        } catch {
+          // Lỗi resolve/validate: alert ở lần crash tiếp theo, operator xem log.
+        }
+      }, tcRestartDelayMs);
+      t.unref?.();
+      pendingTcRestarts.set(key, t);
+    },
+  });
+
+  /** Nút Test SRT (docs/16 T2): đóng vai caller bắt tay vào listener của ta. */
+  function probeSrtListener(port: number): Promise<{ ok: boolean; detail: string }> {
+    return new Promise((resolve) => {
+      let done = false;
+      const finish = (r: { ok: boolean; detail: string }): void => {
+        if (!done) {
+          done = true;
+          resolve(r);
+        }
+      };
+      let child: ReturnType<typeof spawn>;
+      try {
+        child = spawn(srtBin, [`srt://127.0.0.1:${port}`, 'file:///dev/null'], {
+          stdio: ['ignore', 'ignore', 'pipe'],
+        });
+      } catch {
+        finish({ ok: false, detail: `không spawn được ${srtBin}` });
+        return;
+      }
+      let err = '';
+      child.stderr?.on('data', (c: Buffer) => {
+        err += c.toString('utf8');
+        if (err.length > 8000) err = err.slice(-8000);
+      });
+      child.on('error', () => finish({ ok: false, detail: `không chạy được ${srtBin} — kiểm tra VTC_SRT_BIN` }));
+      child.on('exit', (code) => {
+        // Chết nhanh = handshake thất bại (listener không mở / từ chối).
+        finish({ ok: false, detail: `srt listener :${port} không bắt tay được (exit ${String(code)}): ${err.trim().slice(-300)}` });
+      });
+      const timer = setTimeout(() => {
+        // Còn sống sau 8s = handshake OK, đang nhận stream → pass.
+        try {
+          child.kill('SIGKILL');
+        } catch {
+          /* đã chết */
+        }
+        finish({ ok: true, detail: `srt listener :${port} bắt tay OK (nhận stream 8s)` });
+      }, 8000);
+      timer.unref?.();
+    });
+  }
+
+  /** Key so sánh tầng endpoint (preset/output/engine) — đổi là hot-restart ffmpeg. */
+  function transcodeEndpointKey(t: ChannelTranscode | undefined): string {
+    const n = normalizeChannelTranscode(t);
+    if (n === undefined || !n.enabled) return '';
+    return JSON.stringify({ p: n.presetIds, o: n.outputs, e: n.engine ?? 'cpu' });
+  }
+
   const requireAuth = makeRequireAuth(jwtSecret);
   const FORBIDDEN = 'cần quyền quản trị';
   /** true nếu là admin (hoặc partner key service = full quyền, đã công bố). */
@@ -1229,7 +1487,7 @@ export function createApi(opts: ApiOptions = {}): {
         try {
           generateConfText(body); // validate conf sinh được trước khi lưu (400 thay vì 500 lúc start)
         } catch (e) {
-          if (e instanceof ConfigError) return send(res, 400, { error: e.message });
+          if (e instanceof ConfigError || e instanceof TranscodeError) return send(res, 400, { error: e.message });
           throw e;
         }
         const dup = duplicateChannelName([...store.listSources(), body]);
@@ -1262,7 +1520,7 @@ export function createApi(opts: ApiOptions = {}): {
           try {
             generateConfText(merged);
           } catch (e) {
-            if (e instanceof ConfigError) return send(res, 400, { error: e.message });
+            if (e instanceof ConfigError || e instanceof TranscodeError) return send(res, 400, { error: e.message });
             throw e;
           }
           const withMerged = store.listSources().map((s) => (s.id === id ? merged : s));
@@ -1270,16 +1528,47 @@ export function createApi(opts: ApiOptions = {}): {
           if (dup !== null) return send(res, 400, { error: dup });
           const mapErr = checkPartnerMapping(withMerged);
           if (mapErr !== null) return send(res, 400, { error: mapErr });
-          // Chỉ đổi meta (retention/mapping) → không đụng conf, RUNNING cũng sửa được.
+          // Chỉ đổi meta (retention/mapping/endpoint transcode) → không đụng conf tsp,
+          // RUNNING cũng sửa được. Bật/tắt transcode + loopbackPort là CẤU TRÚC
+          // (đổi conf tsp) nên phải nằm trong confKey — thiếu là bug im lặng:
+          // tsp chạy conf cũ không có fork loopback, ffmpeg mồ côi input.
           const confKey = (s: SourceConfig): string =>
             JSON.stringify({
               input: s.input,
               recordAll: s.recordAll,
-              channels: s.channels.map((c) => [c.name, c.serviceId, c.isLive]),
+              channels: s.channels.map((c) => [
+                c.name,
+                c.serviceId,
+                c.isLive,
+                c.transcode?.enabled === true,
+                c.transcode?.loopbackPort ?? 0,
+              ]),
             });
           if (confKey(merged) === confKey(cur)) {
             const rec = store.updateMeta(id, { retentionDays: patch.retentionDays, channels: merged.channels });
             savePersisted();
+            // Hot-update tầng endpoint transcode (docs/16 §8.2): kênh vẫn enabled
+            // mà preset/output/engine đổi → restart mỗi ffmpeg, không động tsp.
+            for (const c of merged.channels) {
+              const b = cur.channels.find((x) => x.name === c.name);
+              if (b === undefined) continue;
+              if (transcodeEndpointKey(b.transcode) === transcodeEndpointKey(c.transcode)) continue;
+              if (transcodeEndpointKey(c.transcode) === '') continue;
+              if (rec.status !== 'RUNNING') continue;
+              const k = tcKey(id, c.name);
+              noRestartTc.add(k);
+              try {
+                await tm.stop(k);
+              } finally {
+                noRestartTc.delete(k);
+              }
+              try {
+                startChannelTranscode(id, c);
+                logger.info(`hot-update transcode ${id}/${c.name} (endpoint đổi, không restart tsp)`);
+              } catch (e) {
+                logger.warn(`hot-update transcode ${id}/${c.name} thất bại: ${e instanceof Error ? e.message : 'lỗi không rõ'}`);
+              }
+            }
             logger.info(`sửa meta source ${id} (không restart)`);
             send(res, 200, rec);
             return;
@@ -1293,6 +1582,7 @@ export function createApi(opts: ApiOptions = {}): {
         if (m === 'DELETE') {
           if (!isAdminReq(req)) return send(res, 403, { error: FORBIDDEN });
           clearPending(id); // hủy restart đã hẹn (nếu crash trước đó)
+          await stopSourceTranscodes(id).catch(() => {}); // diệt ffmpeg đi kèm
           try {
             await pm.stop(id).catch(() => {});
           } catch {
@@ -1329,6 +1619,7 @@ export function createApi(opts: ApiOptions = {}): {
         const pid = pm.start(id, gen.filePath ?? `${confDir}/${id}.conf`);
         store.setStatus(id, 'RUNNING', pid);
         savePersisted();
+        scheduleTcStarts(id); // kênh nào bật transcode → spawn ffmpeg sau khi tsp ổn định
         logger.info(`start source ${id} (pid ${pid})`);
         send(res, 200, { ok: true, pid, conf: gen.content });
         return;
@@ -1338,6 +1629,7 @@ export function createApi(opts: ApiOptions = {}): {
         if (!isAdminReq(req)) return send(res, 403, { error: FORBIDDEN });
         noRestart.add(id); // đánh dấu stop tay để onExit không restart
         clearPending(id);
+        await stopSourceTranscodes(id); // diệt ffmpeg trước, tsp sau (docs/16 §9.1)
         try {
           await pm.stop(id);
         } finally {
@@ -1351,6 +1643,194 @@ export function createApi(opts: ApiOptions = {}): {
       }
     }
 
+    //-- Preset transcode CRUD (docs/16 §8.3, admin) --
+    if (seg[0] === 'api' && seg[1] === 'presets') {
+      const presetId = seg[2] === undefined ? undefined : decodeURIComponent(seg[2]);
+      if (m === 'GET' && presetId === undefined && seg.length === 2) {
+        if (!isAdminReq(req)) return send(res, 403, { error: FORBIDDEN });
+        send(res, 200, presetStore.listPresets());
+        return;
+      }
+      if (m === 'POST' && presetId === undefined && seg.length === 2) {
+        if (!isAdminReq(req)) return send(res, 403, { error: FORBIDDEN });
+        try {
+          const rec = presetStore.createPreset((await readJson(req)) as TranscodePreset);
+          savePresets();
+          logger.info(`tạo preset ${rec.id}`);
+          send(res, 201, rec);
+        } catch (e) {
+          if (e instanceof TranscodeError || e instanceof Error) return send(res, 400, { error: e.message });
+          throw e;
+        }
+        return;
+      }
+      if (presetId !== undefined && seg.length === 3 && m === 'PUT') {
+        if (!isAdminReq(req)) return send(res, 403, { error: FORBIDDEN });
+        try {
+          const rec = presetStore.updatePreset(presetId, (await readJson(req)) as TranscodePreset);
+          savePresets();
+          logger.info(`sửa preset ${presetId} (kênh đang chạy không ảnh hưởng)`);
+          send(res, 200, rec);
+        } catch (e) {
+          if (e instanceof TranscodeError) return send(res, 400, { error: e.message });
+          if (e instanceof Error) {
+            return send(res, e.message.includes('không tồn tại') ? 404 : 400, { error: e.message });
+          }
+          throw e;
+        }
+        return;
+      }
+      if (presetId !== undefined && seg.length === 3 && m === 'DELETE') {
+        if (!isAdminReq(req)) return send(res, 403, { error: FORBIDDEN });
+        const usedBy = store
+          .listSources()
+          .flatMap((s) =>
+            s.channels
+              .filter((c) => (c.transcode?.presetIds ?? []).includes(presetId))
+              .map((c) => `${s.id}/${c.name}`),
+          );
+        if (usedBy.length > 0) {
+          return send(res, 400, { error: `preset ${presetId} đang dùng ở ${usedBy.join(', ')} — gỡ khỏi kênh trước` });
+        }
+        try {
+          presetStore.deletePreset(presetId);
+        } catch (e) {
+          if (e instanceof Error) return send(res, 404, { error: e.message });
+          throw e;
+        }
+        savePresets();
+        logger.info(`xóa preset ${presetId}`);
+        send(res, 200, { ok: true });
+        return;
+      }
+    }
+
+    //-- Transcode từng kênh (docs/16 §8.2–§8.3, admin) --
+    // /api/sources/:id/channels/:name/{transcode|transcode-start|transcode-stop|srt-test}
+    if (seg[0] === 'api' && seg[1] === 'sources' && seg[3] === 'channels' && seg.length === 6) {
+      const id = decodeURIComponent(seg[2] ?? '');
+      const name = decodeURIComponent(seg[4] ?? '');
+      const action = seg[5] ?? '';
+      if (!isAdminReq(req)) return send(res, 403, { error: FORBIDDEN });
+      const rec = store.getSource(id);
+      if (rec === undefined) return send(res, 404, { error: `Source ${id} không tồn tại` });
+      const ch = rec.channels.find((c) => c.name === name);
+      if (ch === undefined) return send(res, 404, { error: `kênh ${name} không tồn tại trong source ${id}` });
+      const key = tcKey(id, name);
+
+      // PUT .../transcode {transcode} — hai tầng: cấu trúc (enabled/loopbackPort)
+      // đổi khi RUNNING thì 400; tầng endpoint thì hot-restart mỗi ffmpeg.
+      if (m === 'PUT' && action === 'transcode') {
+        const body = (await readJson(req)) as { transcode?: ChannelTranscode };
+        const t = normalizeChannelTranscode(body.transcode);
+        if (t === undefined) return send(res, 400, { error: 'thiếu transcode{}' });
+        try {
+          if (t.enabled) {
+            assertLoopbackPort(t.loopbackPort);
+            if (t.presetIds.length === 0) throw new TranscodeError(`kênh ${name} bật transcode nhưng chưa chọn preset nào`);
+            for (const p of t.presetIds) {
+              if (presetStore.getPreset(p) === undefined) throw new TranscodeError(`preset "${p}" không tồn tại`);
+            }
+            for (const o of t.outputs) parseOutput(o);
+          }
+        } catch (e) {
+          if (e instanceof TranscodeError) return send(res, 400, { error: e.message });
+          throw e;
+        }
+        const before = normalizeChannelTranscode(ch.transcode);
+        const structural =
+          (before?.enabled ?? false) !== t.enabled || (before?.loopbackPort ?? 0) !== t.loopbackPort;
+        if (structural && rec.status === 'RUNNING') {
+          return send(res, 400, { error: 'bật/tắt transcode hoặc đổi loopbackPort là thay đổi cấu trúc — stop source trước' });
+        }
+        store.updateMeta(id, { channels: rec.channels.map((c) => (c.name === name ? { ...c, transcode: t } : c)) });
+        savePersisted();
+        let restarted = false;
+        if (rec.status === 'RUNNING' && t.enabled) {
+          noRestartTc.add(key);
+          try {
+            await tm.stop(key);
+          } finally {
+            noRestartTc.delete(key);
+          }
+          try {
+            startChannelTranscode(id, { ...ch, transcode: t });
+            restarted = true;
+          } catch (e) {
+            return send(res, 500, { error: `đã lưu cấu hình nhưng start ffmpeg thất bại: ${e instanceof Error ? e.message : 'lỗi không rõ'}` });
+          }
+        }
+        logger.info(`sửa transcode ${id}/${name} (restarted ffmpeg: ${restarted})`);
+        send(res, 200, { ok: true, restarted });
+        return;
+      }
+      // POST .../transcode-start — start tay ffmpeg (source phải RUNNING).
+      if (m === 'POST' && action === 'transcode-start') {
+        if (rec.status !== 'RUNNING') return send(res, 400, { error: 'source chưa RUNNING — start source trước' });
+        try {
+          const pid = startChannelTranscode(id, ch);
+          send(res, 200, { ok: true, pid });
+        } catch (e) {
+          if (e instanceof Error) return send(res, 400, { error: e.message });
+          throw e;
+        }
+        return;
+      }
+      // POST .../transcode-stop — stop tay ffmpeg (không động tsp).
+      if (m === 'POST' && action === 'transcode-stop') {
+        noRestartTc.add(key);
+        try {
+          await tm.stop(key);
+        } finally {
+          noRestartTc.delete(key);
+        }
+        const p = pendingTcRestarts.get(key);
+        if (p !== undefined) {
+          clearTimeout(p);
+          pendingTcRestarts.delete(key);
+        }
+        send(res, 200, { ok: true });
+        return;
+      }
+      // POST .../srt-test {port} — đóng vai caller bắt tay vào srt-listen của kênh.
+      if (m === 'POST' && action === 'srt-test') {
+        const b = (await readJson(req)) as { port?: number };
+        if (!Number.isInteger(b.port)) return send(res, 400, { error: 'thiếu port (số nguyên)' });
+        const out = (ch.transcode?.outputs ?? []).find(
+          (o) => o.enabled && o.type === 'srt-listen' && o.port === b.port,
+        );
+        if (out === undefined) {
+          return send(res, 400, { error: `port ${String(b.port)} không phải srt-listen output đang enabled của kênh ${name}` });
+        }
+        const r = await probeSrtListener(b.port as number);
+        send(res, r.ok ? 200 : 502, r);
+        return;
+      }
+    }
+
+    // GET /api/transcode/status — snapshot mọi ffmpeg đang quản lý (admin).
+    if (seg[0] === 'api' && seg[1] === 'transcode' && seg[2] === 'status' && seg.length === 3 && m === 'GET') {
+      if (!isAdminReq(req)) return send(res, 403, { error: FORBIDDEN });
+      send(
+        res,
+        200,
+        tm.keys().map((k) => {
+          const s = tm.snapshot(k);
+          return {
+            key: k,
+            pid: s?.pid ?? null,
+            running: true,
+            fps: s?.lastFps ?? null,
+            bitrateKbps: s?.lastBitrateKbps ?? null,
+            lastProgressAt: s?.lastProgressAt ?? null,
+            stale: tm.isStale(k),
+            crashes: s?.crashCount ?? 0,
+          };
+        }),
+      );
+      return;
+    }
+
     send(res, 404, { error: 'không tìm thấy route' });
   }
 
@@ -1358,8 +1838,10 @@ export function createApi(opts: ApiOptions = {}): {
     listen: (port = opts.port ?? 0) =>
       new Promise((resolve) => {
         void seedAdmin().then(() => {
-          // Nạp cấu hình đã persist (restart container không mất sources).
-          const wasRunning = loadPersisted();
+           // Nạp cấu hình đã persist (restart container không mất sources).
+           loadPresets(); // presets.db.json trước để auto-start transcode resolve được
+           if (persistEnabled) logger.info(`nạp ${presetStore.listPresets().length} presets từ ${presetFile}`);
+           const wasRunning = loadPersisted();
           if (persistEnabled) logger.info(`nạp ${store.listSources().length} sources từ ${storeFile}`);
           if (autoStartEnabled) {
             for (const sid of wasRunning) {
@@ -1370,6 +1852,7 @@ export function createApi(opts: ApiOptions = {}): {
                 const gen = writeConfFile({ ...r, confRev: r.confRev }, confDir);
                 const pid = pm.start(sid, gen.filePath ?? `${confDir}/${sid}.conf`);
                 store.setStatus(sid, 'RUNNING', pid);
+                scheduleTcStarts(sid);
               } catch {
                 store.setStatus(sid, 'ERROR');
               }
@@ -1454,6 +1937,7 @@ export function createApi(opts: ApiOptions = {}): {
                 const gen = writeConfFile({ ...cur, confRev: cur.confRev }, confDir);
                 const pid = pm.start(t.id, gen.filePath ?? `${confDir}/${t.id}.conf`);
                 store.setStatus(t.id, 'RUNNING', pid);
+                scheduleTcStarts(t.id);
               } catch {
                 store.setStatus(t.id, 'ERROR');
               }
@@ -1474,8 +1958,12 @@ export function createApi(opts: ApiOptions = {}): {
                   clearInterval(gcTimer);
                   clearInterval(epgTimer);
                   clearInterval(watchdogTimer);
-                  for (const t of pendingRestarts.values()) clearTimeout(t);
-                  pendingRestarts.clear();
+                   for (const t of pendingRestarts.values()) clearTimeout(t);
+                   pendingRestarts.clear();
+                   for (const t of pendingTcRestarts.values()) clearTimeout(t);
+                   pendingTcRestarts.clear();
+                   for (const arr of pendingTcStarts.values()) for (const t of arr) clearTimeout(t);
+                   pendingTcStarts.clear();
                   server.close(() => r());
                 }),
             });

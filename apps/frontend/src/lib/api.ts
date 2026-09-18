@@ -1,5 +1,6 @@
 // lib/api.ts — Gọi backend qua rewrite /api (cùng origin → cookie đi kèm).
 // Dùng `credentials: 'include'` để trình duyệt gửi HttpOnly cookie vtc_token.
+import type { ChannelTranscode } from './transcode';
 
 export interface Source {
   id: string;
@@ -10,6 +11,7 @@ export interface Source {
     isLive: boolean;
     partnerChannelId?: number | null;
     published?: boolean;
+    transcode?: ChannelTranscode;
   }[];
   recordAll: boolean;
   retentionDays?: number;
@@ -71,6 +73,7 @@ export interface SourceInput {
     isLive: boolean;
     partnerChannelId?: number | null;
     published?: boolean;
+    transcode?: ChannelTranscode;
   }[];
   recordAll: boolean;
   retentionDays?: number;

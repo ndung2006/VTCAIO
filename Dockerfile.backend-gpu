@@ -1,28 +1,32 @@
-# Backend Prod — Ubuntu 24.04 + TSDuck .deb ghim version + Node 20
+# Backend GPU (NVENC) — CUDA runtime + TSDuck .deb ghim version + Node 20
+# + ffmpeg static có h264_nvenc + srt-tools.
 #
-# TSDuck cài từ gói .deb chính thức (github releases), KHÔNG build từ nguồn:
-# build mất ~8 phút và byte nhị phân mỗi lần build có thể lệch; .deb ghim
-# version là cách chắc chắn hai máy chạy cùng byte (học từ VTC-SI).
-# Cùng version với VTC-SI: 3.44-4676 — một TSDuck cho cả hai hệ.
-FROM ubuntu:24.04
+# Dùng image này THAY Dockerfile.backend trên máy có GPU NVIDIA (docs/16 §3.2):
+# engine cpu vẫn chạy bình thường, engine nvenc mới có h264_nvenc để dùng.
+# KHÔNG dùng stock ffmpeg Ubuntu (thiếu nvenc) — ffmpeg static của
+# johnvansickle đã build sẵn libx264 + h264_nvenc + libsrt, chỉ 1 binary.
+#
+# Yêu cầu trên HOST (xem scripts/prod-check.sh §6):
+#  1. Driver NVIDIA tương thích CUDA (nvidia-smi chạy được).
+#  2. NVIDIA Container Toolkit (nvidia-container-runtime + docker runtime nvidia).
+#  3. Chạy bằng docker-compose.transcode-gpu.yml (gpus: all).
+ARG CUDA_VERSION=12.8.0
+FROM nvidia/cuda:${CUDA_VERSION}-runtime-ubuntu24.04
 
 ENV DEBIAN_FRONTEND=noninteractive \
     TZ=Asia/Ho_Chi_Minh \
-    NODE_MAJOR=20
+    NODE_MAJOR=20 \
+    NVIDIA_VISIBLE_DEVICES=all \
+    NVIDIA_DRIVER_CAPABILITIES=video,compute,utility
 
 ARG TSDUCK_VERSION=3.44-4676
 ARG TSDUCK_DIST=ubuntu24
 ARG TARGETARCH=amd64
+ARG FFMPEG_STATIC_URL=https://johnvansickle.com/ffmpeg/releases/ffmpeg-release-amd64-static.tar.xz
 
-# 1. Node.js 20 + TSDuck (main + dev) + toolchain build plugin custom
-# + ffmpeg + srt-tools cho transcode (docs/16 — QUYẾT ĐỊNH Phase 1: gộp chung
-# image backend để TranscodeManager spawn() trực tiếp, không tách container).
-# ffmpeg stock Ubuntu 24.04 đã có libx264 + libsrt (verify ở bước build).
-# LƯU Ý GPU (docs/16 §3.2): stock ffmpeg KHÔNG có h264_nvenc — engine mặc định
-# là cpu. Muốn nvenc phải build image GPU riêng (driver NVIDIA + ffmpeg-nvenc),
-# không nhét vào image này để khỏi phình và vỡ máy không có GPU.
+# 1. Node.js 20 + TSDuck (main + dev) + toolchain + srt-tools.
 RUN apt-get update && apt-get install -y --no-install-recommends \
-      ca-certificates curl gnupg procps g++ make ffmpeg srt-tools \
+      ca-certificates curl gnupg procps g++ make srt-tools xz-utils \
     && mkdir -p /etc/apt/keyrings \
     && curl -fsSL --retry 5 https://deb.nodesource.com/gpgkey/nodesource-repo.gpg.key | gpg --dearmor -o /etc/apt/keyrings/nodesource.gpg \
     && echo "deb [signed-by=/etc/apt/keyrings/nodesource.gpg] https://deb.nodesource.com/node_$NODE_MAJOR.x nodistro main" > /etc/apt/sources.list.d/nodesource.list \
@@ -34,17 +38,24 @@ RUN apt-get update && apt-get install -y --no-install-recommends \
     && apt-get update && apt-get install -y --no-install-recommends nodejs \
     && rm -rf /var/lib/apt/lists/* /tmp/tsduck.deb /tmp/tsduck-dev.deb
 
-# 2. Build + cài plugin vtcmonitor custom (mọi conf Prod đều có `-P vtcmonitor`,
-# thiếu nó tsp crash ngay khi Start — bản Dockerfile cũ quên bước này).
+# 2. ffmpeg static (có sẵn libx264 + h264_nvenc + libsrt) vào /usr/local/bin.
+RUN curl -fsSL --retry 5 -o /tmp/ffmpeg-static.tar.xz "$FFMPEG_STATIC_URL" \
+    && mkdir -p /tmp/ffstatic && tar -xJf /tmp/ffmpeg-static.tar.xz -C /tmp/ffstatic \
+    && cp /tmp/ffstatic/ffmpeg-*-amd64-static/ffmpeg /tmp/ffstatic/ffmpeg-*-amd64-static/ffprobe /usr/local/bin/ \
+    && chmod +x /usr/local/bin/ffmpeg /usr/local/bin/ffprobe \
+    && rm -rf /tmp/ffmpeg-static.tar.xz /tmp/ffstatic
+
+# 3. Build + cài plugin vtcmonitor custom (mọi conf Prod đều có `-P vtcmonitor`).
 COPY plugins/vtcmonitor /tmp/vtcmonitor
 RUN cd /tmp/vtcmonitor && make && make install && rm -rf /tmp/vtcmonitor \
     && node --version && tsp --version && tsp -P vtcmonitor --help >/dev/null \
-    && ffmpeg -version >/dev/null && ffmpeg -hide_banner -encoders | grep -q libx264 \
-    && ffmpeg -hide_banner -protocols | grep -q srt && command -v srt-live-transmit
+    && ffmpeg -version >/dev/null \
+    && ffmpeg -hide_banner -encoders | grep -q libx264 \
+    && ffmpeg -hide_banner -encoders | grep -q h264_nvenc \
+    && ffmpeg -hide_banner -protocols | grep -q srt \
+    && command -v srt-live-transmit
 
-# 3. Thư mục chuẩn VTCAIO (TÁCH RIÊNG khỏi hệ cũ để chạy song song lâu dài:
-# hệ cũ dùng /media/ramdisk/live + /mnt/Data/catchup/* + /opt/vtc/conf/sources.
-# Code Node đọc qua ENV nên đổi ở đây là conf/store/GC/exporter ăn theo).
+# 4. Thư mục chuẩn VTCAIO (giống image CPU — 2 image thay thế nhau, không chạy cùng).
 RUN mkdir -p /media/ramdisk/vtcaio \
              /mnt/Data/vtcaio/captures \
              /mnt/Data/vtcaio/exports \
@@ -54,14 +65,13 @@ RUN mkdir -p /media/ramdisk/vtcaio \
 
 WORKDIR /app
 
-# 4. Build backend
+# 5. Build backend (giống image CPU).
 COPY apps/backend/package.json apps/backend/package-lock.json apps/backend/tsconfig.json ./
 RUN npm ci
 COPY apps/backend/src ./src
 RUN ./node_modules/.bin/tsc -p tsconfig.json && npm prune --omit=dev
 
-# PORT 18081 (hệ cũ VTCCatchup giữ 18080; backend host-network bind trực tiếp
-# cổng host nên 2 hệ phải khác nhau. Không dùng 8080: trùng dashboard Traefik).
+# PORT 18081 — image GPU THAY image CPU (không chạy 2 backend cùng lúc).
 ENV PORT=18081 \
     VTC_CONF_DIR=/opt/vtcaio/conf/sources \
     VTC_CAPTURE_DIR=/mnt/Data/vtcaio/captures \

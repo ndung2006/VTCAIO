@@ -84,6 +84,11 @@ export function Sidebar(): React.JSX.Element {
             EPG
           </Link>
         )}
+        {isAdmin && (
+          <Link href="/transcode" className="block rounded px-2 py-1.5 hover:bg-slate-800">
+            Transcode
+          </Link>
+        )}
         <Link href="/exports" className="block rounded px-2 py-1.5 hover:bg-slate-800">
           Trích xuất
         </Link>

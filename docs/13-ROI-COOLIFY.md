@@ -18,6 +18,10 @@
 | Traefik dashboard | host `8080` | không đụng vào |
 | Nginx full-stack (profile prod) | host `8082` | người dùng LAN (hệ cũ giữ `:80`) |
 | Demo HLS (profile demo) | host `8083` | dev local (hệ cũ giữ `:8081`) |
+| SRT listen (transcode, docs/16) | host `9000–9199/UDP` (host-network) | đối tác caller kéo (mở firewall UDP theo port đã cấp) |
+| UDP multicast-out (kiểm tra LAN) | `236.30.x.x:7000–7099/UDP` | VLC/ffplay nội bộ (TTL=1, không ra ngoài LAN) |
+| MediaMTX RTMP push-in | container `1935/TCP` (publish `1935`) | đối tác push `rtmp://publisher:pass@host:1935/<key>` |
+| UDP loopback nội bộ | `127.0.0.1:6000–6099` | tsp → ffmpeg trong cùng container (không mở firewall) |
 
 ### 0.1. Bảng tách song song VTCAIO vs hệ cũ (giữ nguyên dài hạn)
 

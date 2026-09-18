@@ -4,6 +4,7 @@
 //=============================================================================
 
 import type { SourceConfig } from '../core/types.js';
+import { normalizeChannelTranscode } from '../core/TranscodeConfigGenerator.js';
 import type { UserRecord } from './auth.js';
 
 /** Bản ghi Source kèm rev + trạng thái (DB thật sẽ thêm pid, createdAt...). */
@@ -118,6 +119,18 @@ export class Store {
       confRev: typeof rec.confRev === 'number' && rec.confRev >= 1 ? Math.floor(rec.confRev) : 1,
       status: rec.status === 'RUNNING' || rec.status === 'STOPPED' || rec.status === 'ERROR' ? rec.status : 'STOPPED',
     };
+    // Migration DB cũ (docs/16 §12): channel thiếu field transcode mới thì
+    // điền default (không transcode), không được crash lúc boot.
+    if (Array.isArray(norm.channels)) {
+      for (const c of norm.channels) {
+        const t = normalizeChannelTranscode(c.transcode);
+        if (t === undefined) {
+          delete c.transcode;
+        } else {
+          c.transcode = t;
+        }
+      }
+    }
     if (norm.status === 'RUNNING') {
       // PID cũ đã chết theo container — hạ về STOPPED, boot sẽ auto-start lại.
       norm.status = 'STOPPED';

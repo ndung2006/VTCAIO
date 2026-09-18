@@ -19,6 +19,7 @@
 import { mkdirSync, writeFileSync } from 'node:fs';
 import { dirname, join } from 'node:path';
 import type { GeneratedConf, SourceConfig } from './types.js';
+import { loopbackForkLine } from './TranscodeConfigGenerator.js';
 
 /** Thư mục mặc định chứa .conf (Prod: /opt/vtc/conf/sources). */
 export const DEFAULT_CONF_DIR = process.env['VTC_CONF_DIR'] ?? 'storage/conf';
@@ -126,6 +127,16 @@ export function generateConfText(source: SourceConfig): GeneratedConf {
       `tsp -P zap ${c.serviceId} -O hls --duration 5 --live 5 ` +
         `--playlist ${LIVE_BASE}/${c.name}/index.m3u8 ${LIVE_BASE}/${c.name}/segment.ts`,
     );
+  }
+  // Transcode (docs/16 §2): kênh nào bật transcode thì thêm 1 fork SPTS ra
+  // UDP loopback cho ffmpeg đọc (điểm cách ly — ffmpeg KHÔNG đọc multicast
+  // trực tiếp để giữ giám sát CC-error ở tầng ingest).
+  // Phương án B (mặc định): chỉ sinh khi enabled. Phương án A (luôn sinh
+  // sẵn cho mọi kênh live) chốt ở T2 — xem docs/16 §2.3.
+  for (const c of live) {
+    if (c.transcode?.enabled === true) {
+      args.push('-P', 'fork', loopbackForkLine(c.serviceId, c.transcode.loopbackPort));
+    }
   }
   if (source.recordAll) {
     // Lưu chiểu: KHÔNG truyền --live (mặc định VoD = giữ toàn bộ segment).

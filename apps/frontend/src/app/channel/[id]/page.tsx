@@ -14,6 +14,8 @@ import { Header } from '@/components/Header';
 import { LivePlayer } from '@/components/LivePlayer';
 import { CopyButton } from '@/components/CopyButton';
 import { api, timeshiftUrl, type EpgDayView } from '@/lib/api';
+import { TranscodePanel } from '@/components/TranscodePanel';
+import type { ChannelTranscode } from '@/lib/transcode';
 import { useMe } from '@/lib/role';
 
 function fmtT(iso: string): string {
@@ -57,6 +59,26 @@ export default function ChannelPage({ params }: { params: { id: string } }): Rea
   const [vod, setVod] = useState<{ url: string; title: string } | null>(null);
   // EPG: bấm 1 chương trình để chọn → thanh dưới hiện khoảng giờ + nút Xem/Trích xuất.
   const [selId, setSelId] = useState<string | null>(null);
+  // Truyền dẫn (admin): cần sourceId + trạng thái source chứa kênh này.
+  const [srcInfo, setSrcInfo] = useState<{ sourceId: string; status: string; transcode: ChannelTranscode | undefined } | null>(null);
+  const loadSrc = useCallback(async () => {
+    try {
+      const ss = await api.sources();
+      for (const s of ss) {
+        const c = s.channels.find((x) => x.name === name);
+        if (c !== undefined) {
+          setSrcInfo({ sourceId: s.id, status: s.status, transcode: c.transcode });
+          return;
+        }
+      }
+      setSrcInfo(null);
+    } catch {
+      setSrcInfo(null);
+    }
+  }, [name]);
+  useEffect(() => {
+    void loadSrc();
+  }, [loadSrc]);
   const epgListRef = useRef<HTMLUListElement | null>(null);
   const epgItemRefs = useRef(new Map<string, HTMLLIElement>());
 
@@ -320,6 +342,16 @@ export default function ChannelPage({ params }: { params: { id: string } }): Rea
               </div>
             )}
           </div>
+
+          {me?.role === 'admin' && srcInfo !== null && (
+            <TranscodePanel
+              sourceId={srcInfo.sourceId}
+              channelName={name}
+              sourceStatus={srcInfo.status}
+              initial={srcInfo.transcode}
+              onSaved={() => void loadSrc()}
+            />
+          )}
         </main>
       </div>
     </div>
