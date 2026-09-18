@@ -192,6 +192,35 @@ describe('Transcode API', { concurrency: false }, () => {
     }
   });
 
+  it('srt-test srt-caller: bắt tay tới listener phía họ (fake 127.0.0.1)', async () => {
+    // Thêm output caller vào kênh (endpoint tier, source đang RUNNING → hot-restart ffmpeg)
+    const add = await req(
+      '/api/sources/TC1/channels/tcv1/transcode',
+      putJson({
+        transcode: {
+          enabled: true,
+          loopbackPort: 6001,
+          presetIds: ['p720'],
+          outputs: [
+            { type: 'srt-listen', presetId: 'p720', enabled: true, port: 9002 },
+            { type: 'srt-caller', presetId: 'p720', enabled: true, host: '127.0.0.1', port: 9101 },
+          ],
+        },
+      }),
+    );
+    assert.equal(add.status, 200);
+    let r = await req('/api/sources/TC1/channels/tcv1/srt-test', json({ port: 9101 }));
+    assert.equal(r.status, 200);
+    assert.match(((await r.json()) as { detail: string }).detail, /127\.0\.0\.1:9101/);
+    process.env['VTC_FAKE_SRT_FAIL'] = '1';
+    try {
+      r = await req('/api/sources/TC1/channels/tcv1/srt-test', json({ port: 9101 }));
+      assert.equal(r.status, 502);
+    } finally {
+      delete process.env['VTC_FAKE_SRT_FAIL'];
+    }
+  });
+
   it('engine nvenc bị chặn fail-fast (fake thiếu h264_nvenc)', async () => {
     const nvenc = { ...tcChannel.transcode, engine: 'nvenc' };
     const r = await req('/api/sources/TC1/channels/tcv1/transcode', putJson({ transcode: nvenc }));
@@ -259,8 +288,7 @@ describe('Transcode API', { concurrency: false }, () => {
     assert.notEqual(ff1[0]?.pid, ff0[0]?.pid); // ffmpeg đã hot-restart
   });
 
-  it('tạo/sửa source trỏ preset lạ → 400 ngay, không đợi start', async () => {
-    const bad = {
+    it('tạo/sửa source trỏ preset lạ → 400 ngay, không đợi start', async () => {    const bad = {
       id: 'TCBAD',
       input: 'file /tmp/vtc-demo/input.ts --repeat',
       recordAll: true,
@@ -302,5 +330,114 @@ describe('Transcode API', { concurrency: false }, () => {
     await sleep(600);
     const fin = (await (await req('/api/transcode/status')).json()) as unknown[];
     assert.equal(fin.length, 0);
+  });
+
+  it('puller RTMP: tạo source + start → puller chạy trước tsp; stop → diệt', async () => {
+    const body = {
+      id: 'TC2',
+      input: 'ip 127.0.0.1:6101',
+      recordAll: false,
+      channels: [{ name: 'tcrtmp', serviceId: 21, isLive: true }],
+      puller: { rtmpUrl: 'rtmp://127.0.0.1:1935/live', streamKey: 'tcrtmp', udpPort: 6101 },
+    };
+    let r = await req('/api/sources', json(body));
+    assert.equal(r.status, 201);
+    r = await req('/api/sources/TC2/start', { method: 'POST' });
+    assert.equal(r.status, 200);
+    await sleep(300);
+    const s = (await (await req('/api/transcode/status')).json()) as { key: string }[];
+    assert.ok(s.some((x) => x.key === 'pull/TC2'), 'puller phải chạy sau start');
+    r = await req('/api/sources/TC2/stop', { method: 'POST' });
+    assert.equal(r.status, 200);
+    const s2 = (await (await req('/api/transcode/status')).json()) as unknown[];
+    assert.equal(s2.length, 0); // stop diệt luôn puller
+  });
+
+  it('puller hot-update khi RUNNING (tsp giữ pid); puller sai → 400', async () => {
+    await req('/api/sources/TC2/start', { method: 'POST' });
+    await sleep(300);
+    const src = (await (await req('/api/sources/TC2')).json()) as { pid: number };
+    const p0 = (await (await req('/api/transcode/status')).json()) as { key: string; pid: number }[];
+    const pull0 = p0.find((x) => x.key === 'pull/TC2');
+    assert.ok(pull0 !== undefined);
+    const r = await req(
+      '/api/sources/TC2',
+      putJson({ puller: { rtmpUrl: 'rtmp://127.0.0.1:1935/live', streamKey: 'doi-key', udpPort: 6101 } }),
+    );
+    assert.equal(r.status, 200);
+    const src2 = (await (await req('/api/sources/TC2')).json()) as { pid: number };
+    assert.equal(src2.pid, src.pid); // tsp KHÔNG restart
+    const p1 = (await (await req('/api/transcode/status')).json()) as { key: string; pid: number }[];
+    const pull1 = p1.find((x) => x.key === 'pull/TC2');
+    assert.ok(pull1 !== undefined && pull1.pid !== pull0.pid); // puller đã hot-restart
+    const bad = await req('/api/sources/TC2', putJson({ puller: { rtmpUrl: '', streamKey: 'k', udpPort: 6101 } }));
+    assert.equal(bad.status, 400);
+    await req('/api/sources/TC2/stop', { method: 'POST' });
+  });
+
+  it('puller crash → auto-restart', async () => {
+    await req('/api/sources/TC2/start', { method: 'POST' });
+    await sleep(300);
+    const s0 = (await (await req('/api/transcode/status')).json()) as { key: string; pid: number }[];
+    const pull = s0.find((x) => x.key === 'pull/TC2');
+    assert.ok(pull !== undefined);
+    process.kill(pull.pid, 'SIGKILL');
+    const deadline = Date.now() + 4000;
+    let ok = false;
+    while (Date.now() < deadline) {
+      await sleep(200);
+      const cur = (await (await req('/api/transcode/status')).json()) as { key: string; pid: number }[];
+      const p = cur.find((x) => x.key === 'pull/TC2');
+      if (p !== undefined && p.pid !== pull.pid) {
+        ok = true;
+        break;
+      }
+    }
+    assert.equal(ok, true);
+    await req('/api/sources/TC2/stop', { method: 'POST' });
+    await req('/api/sources/TC2', { method: 'DELETE' });
+  });
+
+  it('trùng loopbackPort / srt-listen / multicast toàn hệ → 400', async () => {
+    // TC1/tcv1 đang giữ loopback 6001 + srt 9003 (từ test hot-update).
+    const mkSrc = (id: string, ch: unknown): unknown => ({
+      id,
+      input: 'file /tmp/vtc-demo/input.ts --repeat',
+      recordAll: true,
+      channels: [ch],
+    });
+    const mkCh = (name: string, sid: number, loop: number, outputs: unknown[]): unknown => ({
+      name,
+      serviceId: sid,
+      isLive: true,
+      transcode: { enabled: true, loopbackPort: loop, presetIds: ['p720'], outputs },
+    });
+    const srtOut = (port: number): unknown => ({ type: 'srt-listen', presetId: 'p720', enabled: true, port });
+    let r = await req('/api/sources', json(mkSrc('TC3', mkCh('tcv3', 31, 6001, [srtOut(9011)]))));
+    assert.equal(r.status, 400);
+    assert.match(((await r.json()) as { error: string }).error, /loopbackPort 6001 bị trùng/);
+    r = await req('/api/sources', json(mkSrc('TC3', mkCh('tcv3', 31, 6002, [srtOut(9003)]))));
+    assert.equal(r.status, 400);
+    assert.match(((await r.json()) as { error: string }).error, /srt-listen 9003 bị trùng/);
+    // Multicast: TC3 giữ 236.30.233.1:7001 OK, TC4 trùng thì 400
+    const mcast = { type: 'udp-mcast', presetId: 'p720', enabled: true, group: '236.30.233.1', port: 7001, localAddr: '192.168.20.200' };
+    r = await req('/api/sources', json(mkSrc('TC3', mkCh('tcv3', 31, 6002, [mcast]))));
+    assert.equal(r.status, 201);
+    r = await req('/api/sources', json(mkSrc('TC4', mkCh('tcv4', 32, 6003, [mcast]))));
+    assert.equal(r.status, 400);
+    assert.match(((await r.json()) as { error: string }).error, /multicast.*bị trùng/);
+    // PUT-transcode kênh khác trỏ cổng đã dùng cũng 400
+    r = await req(
+      '/api/sources',
+      json(mkSrc('TC4', mkCh('tcv4', 32, 6003, [srtOut(9012)]))),
+    );
+    assert.equal(r.status, 201);
+    const clash = await req(
+      '/api/sources/TC4/channels/tcv4/transcode',
+      putJson({ transcode: { enabled: true, loopbackPort: 6003, presetIds: ['p720'], outputs: [srtOut(9003)] } }),
+    );
+    assert.equal(clash.status, 400);
+    await req('/api/sources/TC3', { method: 'DELETE' });
+    await req('/api/sources/TC4', { method: 'DELETE' });
   });
 });

@@ -26,8 +26,9 @@ curl localhost:8080/health
 | PUT | `/api/sources/:id/channels/:name/transcode` | `{transcode}` hai tầng: cấu trúc khi RUNNING → 400, endpoint → hot-restart ffmpeg |
 | POST | `/api/sources/:id/channels/:name/transcode-start` | start tay ffmpeg (source phải RUNNING) |
 | POST | `/api/sources/:id/channels/:name/transcode-stop` | stop tay ffmpeg (không động tsp) |
-| POST | `/api/sources/:id/channels/:name/srt-test` | `{port}` → caller bắt tay 8s vào srt-listen của kênh |
-| GET | `/api/transcode/status` | snapshot mọi ffmpeg `{key,pid,fps,bitrateKbps,stale,crashes}` |
+| POST | `/api/sources/:id/channels/:name/srt-test` | `{port}` → bắt tay SRT (listen: đóng vai caller vào cổng ta; caller: bắt tay tới listener phía họ) |
+| GET | `/api/transcode/status` | snapshot mọi ffmpeg `{key,pid,fps,bitrateKbps,stale,waiting,crashes}` (`waiting` = sống quá 30s chưa có frame, thường chờ caller SRT) |
+| GET/POST | `/api/sources` | list / tạo `{id,input,channels,recordAll}` — thêm `puller?` cho nguồn RTMP (docs/16 §5) |
 
 Ví dụ nhanh:
 

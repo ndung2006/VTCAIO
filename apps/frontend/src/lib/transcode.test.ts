@@ -1,7 +1,7 @@
 // transcode.test.ts — validate form FE (mirror backend, không gọi mạng).
 import { describe, it } from 'node:test';
 import assert from 'node:assert/strict';
-import { validateChannelTranscode, validateOutput } from './transcode.js';
+import { validateChannelTranscode, validateOutput, validatePuller } from './transcode.js';
 
 const listen = (port: number): Parameters<typeof validateOutput>[0] => ({
   type: 'srt-listen',
@@ -28,6 +28,28 @@ describe('validateOutput', () => {
       /host/,
     );
     assert.match(validateOutput({ type: 'rtmp-push', presetId: 'p720', enabled: true, url: 'rtmp://x/live' }) ?? '', /streamKey/);
+  });
+
+  it('tick mã hóa mà ref trống thì chặn ở form', () => {
+    assert.match(
+      validateOutput({ type: 'srt-listen', presetId: 'p720', enabled: true, port: 9001, passphraseRef: '' }) ?? '',
+      /ref trống/,
+    );
+    assert.equal(validateOutput({ type: 'srt-listen', presetId: 'p720', enabled: true, port: 9001, passphraseRef: 'vtvgo' }), null);
+    assert.equal(validateOutput(listen(9001)), null); // không tick = qua
+  });
+});
+
+describe('validatePuller', () => {
+  it('đúng qua; thiếu key / sai port / thiếu url đều báo', () => {
+    assert.equal(validatePuller(undefined), null);
+    assert.equal(
+      validatePuller({ rtmpUrl: 'rtmp://127.0.0.1:1935/live', streamKey: 'k', udpPort: 6101 }),
+      null,
+    );
+    assert.match(validatePuller({ rtmpUrl: 'rtmp://x/live', streamKey: '', udpPort: 6101 }) ?? '', /streamKey/);
+    assert.match(validatePuller({ rtmpUrl: 'rtmp://x/live', streamKey: 'k', udpPort: 6001 }) ?? '', /udpPort/);
+    assert.match(validatePuller({ rtmpUrl: '', streamKey: 'k', udpPort: 6101 }) ?? '', /rtmpUrl/);
   });
 });
 

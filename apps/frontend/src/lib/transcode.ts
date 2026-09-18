@@ -37,6 +37,27 @@ export interface ChannelTranscode {
   engine?: TranscodeEngine;
 }
 
+export interface SourcePuller {
+  rtmpUrl: string;
+  streamKey: string;
+  udpPort: number;
+}
+
+export const pullerSchema = z.object({
+  rtmpUrl: z.string().min(1, 'thiếu URL RTMP (VD rtmp://127.0.0.1:1935/live)').max(512),
+  streamKey: z.string().min(1, 'thiếu stream key').max(256),
+  udpPort: z.number().int().min(6100).max(6199),
+});
+
+/** Validate puller → message lỗi hoặc null. undefined = nguồn trực tiếp (qua). */
+export function validatePuller(p: SourcePuller | undefined): string | null {
+  if (p === undefined) return null;
+  const r = pullerSchema.safeParse(p);
+  if (r.success) return null;
+  const first = r.error.issues[0];
+  return first !== undefined ? `${first.path.join('.')}: ${first.message}` : 'puller sai';
+}
+
 export interface TcStatus {
   key: string;
   pid: number | null;
@@ -106,6 +127,11 @@ export const outputSchema = z
     const need = (cond: boolean, field: string, msg: string): void => {
       if (!cond) ctx.addIssue({ code: z.ZodIssueCode.custom, path: [field], message: msg });
     };
+    // Đã tick Mã hóa (ref khác undefined) mà ref trống → chặn ngay ở form
+    // (backend cũng chặn lúc spawn — fail-fast 2 lớp).
+    if ((o.type === 'srt-listen' || o.type === 'srt-caller') && o.passphraseRef !== undefined) {
+      need(o.passphraseRef !== '', 'passphraseRef', 'đã bật mã hóa nhưng ref trống — điền ref hoặc bỏ tick');
+    }
     switch (o.type) {
       case 'srt-listen':
         need(o.port !== undefined && o.port >= 9000 && o.port <= 9199, 'port', 'srt-listen port 9000..9199');

@@ -270,10 +270,11 @@ export function TranscodePanel(props: {
                   <button onClick={() => setOutputs((prev) => prev.filter((_, idx) => idx !== i))} className="rounded bg-slate-200 px-2 py-1 text-xs">
                     Bỏ
                   </button>
-                  {o.type === 'srt-listen' && o.enabled && o.port !== undefined && (
+                  {(o.type === 'srt-listen' || o.type === 'srt-caller') && o.enabled && o.port !== undefined && (
                     <button
                       onClick={() => void doTest(o.port as number)}
                       disabled={testingPort !== null}
+                      title={o.type === 'srt-caller' ? 'Bắt tay tới listener phía họ' : 'Đóng vai caller bắt tay vào cổng này'}
                       className="rounded bg-sky-700 px-2 py-1 text-xs text-white disabled:opacity-50"
                     >
                       {testingPort === o.port ? 'Đang test…' : 'Test'}
@@ -293,10 +294,26 @@ export function TranscodePanel(props: {
                     StreamID (trống = tên kênh)
                     <input value={o.streamId ?? ''} onChange={(e) => setOutput(i, { streamId: e.target.value })} className={`${inputCls} font-mono`} />
                   </label>
-                  <label className="text-xs">
-                    Passphrase ref (≥16 ký tự ở Prod)
-                    <input value={o.passphraseRef ?? ''} onChange={(e) => setOutput(i, { passphraseRef: e.target.value })} placeholder="vtvgo (trống = không mã hóa)" className={`${inputCls} font-mono`} />
-                  </label>
+                  <div className="text-xs">
+                    <label className="flex items-center gap-1">
+                      <input
+                        type="checkbox"
+                        checked={o.passphraseRef !== undefined}
+                        onChange={(e) => setOutput(i, { passphraseRef: e.target.checked ? '' : undefined })}
+                      />
+                      Mã hóa SRT (passphrase ≥16 ký tự ở Prod)
+                    </label>
+                    <input
+                      value={o.passphraseRef ?? ''}
+                      onChange={(e) => setOutput(i, { passphraseRef: e.target.value })}
+                      disabled={o.passphraseRef === undefined}
+                      placeholder="ref trong VTC_SRT_PASSPHRASES (VD vtvgo)"
+                      className={`${inputCls} mt-1 font-mono disabled:bg-slate-100`}
+                    />
+                    {o.passphraseRef !== undefined && (
+                      <p className="mt-1 text-slate-500">Ref phải có sẵn trong env backend (thêm rồi restart backend) — secret không lưu vào DB.</p>
+                    )}
+                  </div>
                 </div>
               )}
               {o.type === 'rtmp-push' && (

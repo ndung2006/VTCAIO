@@ -4,13 +4,16 @@ import assert from 'node:assert/strict';
 import {
   assertEngineAvailable,
   buildFfmpegArgs,
+  buildPullerArgs,
   defaultPresets,
   isMulticastIPv4,
   isValidOutputGroup,
   loopbackForkLine,
   normalizeChannelTranscode,
+  normalizeSourcePuller,
   parseOutput,
   parsePreset,
+  parsePuller,
   requiredEncoder,
   transcodeInputUrl,
   TranscodeError,
@@ -168,6 +171,13 @@ describe('buildFfmpegArgs', () => {
     assert.ok(!args.includes('-filter_complex'), 'audio-only không cần filter video');
   });
 
+  it('tick mã hóa mà ref trống thì parseOutput ném (mirror FE)', () => {
+    assert.throws(
+      () => parseOutput({ type: 'srt-listen', presetId: 'p720', enabled: true, port: 9001, passphraseRef: '' }),
+      /ref trống/,
+    );
+  });
+
   it('lỗi fail-fast: preset lạ, port trùng, group 239.x, rtmp-in, thiếu output', () => {
     const ps = presetsById(['p720']);
     const listen = (port: number): unknown => ({ type: 'srt-listen', presetId: 'p720', enabled: true, port });
@@ -298,6 +308,34 @@ describe('input file override (lab/source file)', () => {
         }),
       /inputUrl rỗng/,
     );
+  });
+});
+
+describe('puller RTMP→UDP', () => {
+  it('argv remux copy ra UDP localhost, giữ -progress', () => {
+    const args = buildPullerArgs({ rtmpUrl: 'rtmp://127.0.0.1:1935/live', streamKey: 'dn1', udpPort: 6101 });
+    const s = args.join(' ');
+    assert.ok(args.includes('-progress') && args.includes('pipe:1'), 'giữ progress để giám sát');
+    assert.ok(s.includes('-i rtmp://127.0.0.1:1935/live/dn1'), 'input RTMP đủ url/key');
+    assert.ok(args.includes('-c') && args.includes('copy'), 'remux -c copy (nhẹ CPU)');
+    assert.ok(s.includes('udp://127.0.0.1:6101?pkt_size=1316'), 'output UDP localhost');
+  });
+
+  it('validate: thiếu key, sai port, inputUrl override cho lab', () => {
+    assert.throws(() => parsePuller({ rtmpUrl: 'rtmp://x/live', streamKey: '', udpPort: 6101 }), TranscodeError);
+    assert.throws(() => parsePuller({ rtmpUrl: 'rtmp://x/live', streamKey: 'k', udpPort: 6001 }), TranscodeError);
+    const args = buildPullerArgs({ rtmpUrl: 'rtmp://x/live', streamKey: 'k', udpPort: 6101, inputUrl: '/tmp/in.ts' });
+    assert.equal(args[args.indexOf('-i') + 1], '/tmp/in.ts');
+  });
+
+  it('normalize DB cũ: thiếu → undefined, sai → undefined (nguồn trực tiếp)', () => {
+    assert.equal(normalizeSourcePuller(undefined), undefined);
+    assert.equal(normalizeSourcePuller({} as unknown as Parameters<typeof normalizeSourcePuller>[0]), undefined);
+    assert.deepEqual(normalizeSourcePuller({ rtmpUrl: 'rtmp://x/live', streamKey: 'k', udpPort: 6101 }), {
+      rtmpUrl: 'rtmp://x/live',
+      streamKey: 'k',
+      udpPort: 6101,
+    });
   });
 });
 

@@ -7,6 +7,7 @@ import { Sidebar } from '@/components/Sidebar';
 import { Header } from '@/components/Header';
 import { RequireAdmin } from '@/lib/role';
 import { api, type Source, type SourceInput } from '@/lib/api';
+import { validatePuller, type SourcePuller } from '@/lib/transcode';
 
 interface ChannelDraft {
   name: string;
@@ -35,6 +36,11 @@ export default function SourcesPage(): React.JSX.Element {
   const [fRecordAll, setFRecordAll] = useState(true);
   const [fRetention, setFRetention] = useState('30');
   const [fChannels, setFChannels] = useState<ChannelDraft[]>([{ ...EMPTY_CHANNEL }]);
+  // Puller RTMP→UDP (docs/16 §5): nguồn RTMP qua MediaMTX, tsp ingest UDP localhost.
+  const [fPullerOn, setFPullerOn] = useState(false);
+  const [fRtmpUrl, setFRtmpUrl] = useState('rtmp://127.0.0.1:1935/live');
+  const [fStreamKey, setFStreamKey] = useState('');
+  const [fUdpPort, setFUdpPort] = useState('6101');
   // Preview conf + xóa
   const [preview, setPreview] = useState<{ id: string; conf: string; liveCount: number } | null>(null);
   const [confirmDel, setConfirmDel] = useState<Source | null>(null);
@@ -71,6 +77,10 @@ export default function SourcesPage(): React.JSX.Element {
     setFRecordAll(true);
     setFRetention('30');
     setFChannels([{ ...EMPTY_CHANNEL }]);
+    setFPullerOn(false);
+    setFRtmpUrl('rtmp://127.0.0.1:1935/live');
+    setFStreamKey('');
+    setFUdpPort('6101');
     setMsg('');
     resetScan();
     setShowForm(true);
@@ -91,6 +101,10 @@ export default function SourcesPage(): React.JSX.Element {
         ? s.channels.map((c) => ({ name: c.name, serviceId: String(c.serviceId), isLive: c.isLive }))
         : [{ ...EMPTY_CHANNEL }],
     );
+    setFPullerOn(s.puller !== undefined);
+    setFRtmpUrl(s.puller?.rtmpUrl ?? 'rtmp://127.0.0.1:1935/live');
+    setFStreamKey(s.puller?.streamKey ?? '');
+    setFUdpPort(s.puller !== undefined ? String(s.puller.udpPort) : '6101');
     setMsg('');
     resetScan();
     setShowForm(true);
@@ -202,8 +216,18 @@ export default function SourcesPage(): React.JSX.Element {
       setMsg('Số ngày lưu chiểu phải 1..365 (để trống = mặc định hệ thống).');
       return null;
     }
+    let puller: SourcePuller | undefined;
+    if (fPullerOn) {
+      puller = { rtmpUrl: fRtmpUrl.trim(), streamKey: fStreamKey.trim(), udpPort: Number(fUdpPort) };
+      const perr = validatePuller(puller);
+      if (perr !== null) {
+        setMsg(`Puller RTMP: ${perr}.`);
+        return null;
+      }
+    }
     const body: SourceInput = { id, input: fInput.trim(), channels, recordAll: fRecordAll };
     if (retention !== undefined) body.retentionDays = retention;
+    if (puller !== undefined) body.puller = puller;
     return body;
   };
 
@@ -355,6 +379,11 @@ export default function SourcesPage(): React.JSX.Element {
                 </div>
               </div>
               <p className="mt-1 font-mono text-sm text-slate-600">-I {s.input}</p>
+              {s.puller !== undefined && (
+                <p className="font-mono text-sm text-sky-700">
+                  ⤓ puller RTMP {s.puller.rtmpUrl}/{s.puller.streamKey} → udp 127.0.0.1:{s.puller.udpPort}
+                </p>
+              )}
               <p className="text-sm">
                 Kênh:{' '}
                 {s.channels.map((c) => `${c.name}(sid ${c.serviceId}${c.isLive ? '' : ', no-live'})`).join(', ') || '—'}
@@ -461,6 +490,49 @@ export default function SourcesPage(): React.JSX.Element {
                 <input type="checkbox" checked={fRecordAll} onChange={(e) => setFRecordAll(e.target.checked)} />
                 Ghi catchup toàn bộ luồng ra đĩa (khuyên bật)
               </label>
+              <div className="rounded border p-3">
+                <label className="flex items-center gap-2 text-sm font-semibold">
+                  <input type="checkbox" checked={fPullerOn} onChange={(e) => setFPullerOn(e.target.checked)} />
+                  Nguồn RTMP qua puller (MediaMTX → UDP localhost → tsp)
+                </label>
+                {fPullerOn && (
+                  <div className="mt-2 grid gap-2 md:grid-cols-3">
+                    <label className="text-sm">
+                      URL app RTMP
+                      <input
+                        value={fRtmpUrl}
+                        onChange={(e) => setFRtmpUrl(e.target.value)}
+                        placeholder="rtmp://127.0.0.1:1935/live"
+                        className="mt-1 w-full rounded border px-3 py-2 font-mono"
+                      />
+                    </label>
+                    <label className="text-sm">
+                      Stream key (đối tác push)
+                      <input
+                        value={fStreamKey}
+                        onChange={(e) => setFStreamKey(e.target.value)}
+                        placeholder="ten-kenh"
+                        className="mt-1 w-full rounded border px-3 py-2 font-mono"
+                      />
+                    </label>
+                    <label className="text-sm">
+                      Cổng UDP puller→tsp (6100–6199)
+                      <input
+                        value={fUdpPort}
+                        onChange={(e) => setFUdpPort(e.target.value)}
+                        inputMode="numeric"
+                        placeholder="6101"
+                        className="mt-1 w-full rounded border px-3 py-2 font-mono"
+                      />
+                    </label>
+                    <p className="text-xs text-slate-500 md:col-span-3">
+                      Input TSDuck ở trên phải là UDP puller nghe (VD “ip 127.0.0.1:6101”). Puller chỉ remux
+                      `-c copy` (nhẹ CPU) — yêu cầu nội dung RTMP là H.264 + AAC. Đổi puller khi source đang
+                      chạy = hot-restart mỗi puller, không động tsp.
+                    </p>
+                  </div>
+                )}
+              </div>
               {!fRecordAll && (
                 <p className="text-sm text-amber-600">
                   Tắt ghi đĩa = kênh chỉ live (xem trực tiếp qua RAM bình thường, không tốn ổ). Trích

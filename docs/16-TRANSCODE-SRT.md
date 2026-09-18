@@ -138,6 +138,7 @@ Bật/tắt transcode làm đổi file conf của tsp (thêm/bớt dòng fork) �
 - **1 port = 1 rendition = 1 kết nối tại 1 thời điểm** (quy ước an toàn Phase 1; SRT listener về lý thuyết chịu được nhiều caller nhưng chưa dùng).
 - Port cấp theo kênh, không cho tự gõ tự do. `streamid = tên kênh`.
 - Passphrase ≥16 ký tự **bắt buộc ở Prod** (test nội bộ được tắt). `rendezvous` chỉ khi cả 2 bên cùng NAT khó.
+- **Đã verify mã hóa 2 đầu 18/09/2026** (ffmpeg thật): passphrase chứa `@:/+` được URL-encode đúng (`m%40t-khau%3Arat%2Fdai%2B12345`); caller sai pass → rớt (exit 251); đúng pass → giải mã được H.264 + AAC. Bật/tắt trên UI panel Truyền dẫn (tick Mã hóa + ref).
 - Backend chạy `network_mode: host` → SRT listener mở port trực tiếp trên host, không cần port mapping (§11 firewall).
 - **QUY TẮC VẬN HÀNH (đo thực tế ffmpeg 8.1, 18/09/2026): output SRT listener CHẶN ở bước mở cho tới khi caller đầu tiên kết nối.** Hệ quả:
   1. Kênh có N srt-listen output cần ĐỦ N caller thì ffmpeg mới bắt đầu encode — thiếu 1 caller là cả cụm đứng (kể cả output multicast/RTMP khác, vì ffmpeg mở outputs tuần tự).
@@ -150,9 +151,15 @@ Bật/tắt transcode làm đổi file conf của tsp (thêm/bớt dòng fork) �
 
 ## 5. RTMP — 2 chiều (phụ, SRT là chính)
 
-- **Nhận push:** dựng **MediaMTX** (1 binary Go, nhẹ) làm RTMP server sidecar, mỗi kênh 1 stream-key + whitelist IP + auth. Cần định nghĩa service `mediamtx` trong compose + đường giao tiếp với backend (ghi rõ khi làm T3).
+- **Nhận push:** dựng **MediaMTX** (`mediamtx/mediamtx.yml` + `docker-compose.mediamtx.yml`, RTMP :1935, publish user/pass, image ghim `v1.9.3`) làm RTMP server sidecar, mỗi kênh 1 stream-key. Up độc lập cùng backend CPU/GPU.
+- **Đưa vào pipeline (puller, đã code + test):** TSDuck không đọc RTMP → 1 ffmpeg puller/key remux **`-c copy`** (nhẹ CPU, không encode lại) từ MediaMTX ra UDP localhost dải **6100–6199**, source ingest UDP đó như nguồn thường (`input: "ip 127.0.0.1:61xx"` + `puller: {rtmpUrl, streamKey, udpPort}`).
+  - Yêu cầu nội dung RTMP là H.264 + AAC (codec lạ thì ingest xong dùng transcode kênh để chuyển).
+  - Lifecycle: start source → puller trước, tsp sau; stop/delete → diệt puller cùng ffmpeg rồi mới tới tsp; crash → Telegram + restart 2s + crash-guard chung (key `pull/<sourceId>`, hiện trong `/api/transcode/status`).
+  - Đổi puller (url/key/port) là hot-update — chỉ restart puller, không động tsp (input tsp không đổi nên `confKey` không tính puller).
+  - UI trang `/sources`: tick "Nguồn RTMP qua puller" + 3 ô (URL app, key, cổng) + hint input.
 - **Đẩy đi:** ffmpeg `-f flv rtmp://<ip-ho>/live/<key>` + retry/backoff.
 - RTMP chịu mất gói kém SRT → chỉ dùng khi đối tác bắt buộc.
+- Verify puller trên Prod (không test được trong Docker dev — UDP receive bị chặn): đối tác push lên mediamtx → `fps > 0` ở key `pull/<id>` + chunk GHI mọc + trích thử phát được.
 
 ---
 

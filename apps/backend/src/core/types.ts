@@ -41,6 +41,28 @@ export interface SourceConfig {
   retentionDays?: number | undefined;
   /** Tăng mỗi lần regen để debug/rollback (Phase 2 lưu vào DB). */
   confRev?: number;
+  /**
+   * Puller RTMP→UDP (docs/16 §5, T3-wiring). TSDuck không đọc được RTMP nên
+   * 1 ffmpeg puller remux (`-c copy`) RTMP từ MediaMTX ra UDP localhost, còn
+   * source này ingest UDP đó như nguồn thường (`input: "ip 127.0.0.1:61xx"`).
+   * undefined = nguồn trực tiếp (multicast/file), không puller.
+   * Đổi puller là hot-update (chỉ restart puller, không động tsp).
+   */
+  puller?: SourcePuller | undefined;
+}
+
+/**
+ * Cấu hình puller RTMP của 1 source.
+ * Yêu cầu nội dung RTMP là H.264 + AAC (puller chỉ remux `-c copy`, nhẹ CPU).
+ * Codec lạ thì ingest xong dùng transcode kênh để chuyển (đường thường).
+ */
+export interface SourcePuller {
+  /** URL app RTMP trên MediaMTX (VD rtmp://127.0.0.1:1935/live). */
+  rtmpUrl: string;
+  /** Stream key đối tác push (phần sau URL). */
+  streamKey: string;
+  /** Cổng UDP localhost puller phát ra = cổng tsp nghe (dải 6100–6199). */
+  udpPort: number;
 }
 
 /** Kết quả sinh conf. */

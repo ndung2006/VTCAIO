@@ -25,9 +25,12 @@ import {
   assertEngineAvailable,
   assertLoopbackPort,
   buildFfmpegArgs,
+  buildPullerArgs,
   defaultPresets,
   normalizeChannelTranscode,
+  normalizeSourcePuller,
   parseOutput,
+  parsePuller,
   parseSecretsEnv,
   TranscodeError,
 } from '../core/TranscodeConfigGenerator.js';
@@ -584,6 +587,34 @@ export function createApi(opts: ApiOptions = {}): {
     },
     onExit: (key, code, signal) => {
       if (noRestartTc.has(key)) return; // stop tay — không restart
+      // Nhánh puller RTMP (key `pull/<sourceId>`): restart như ffmpeg transcode
+      // (delay 2s, crash-guard chung qua tm.recentCrashes).
+      if (key.startsWith('pull/')) {
+        const sid = key.slice('pull/'.length);
+        const rec = store.getSource(sid);
+        if (rec === undefined || rec.status !== 'RUNNING' || normalizeSourcePuller(rec.puller) === undefined) return;
+        const crashes = tm.recentCrashes(key, 5 * 60 * 1000);
+        const why = signal !== null ? `signal ${signal}` : `mã ${String(code)}`;
+        if (crashes > 3) {
+          void notifier.alert(`tc:${key}`, `Puller RTMP source ${sid} crash ${crashes} lần/5 phút (${why}) — DỪNG HẲN, chờ operator kiểm tra.`);
+          return;
+        }
+        void notifier.alert(`tc:${key}`, `Puller RTMP source ${sid} dừng đột ngột (${why}) — restart sau ${tcRestartDelayMs}ms (lần ${crashes}/3).`);
+        const t = setTimeout(() => {
+          pendingTcRestarts.delete(key);
+          const r2 = store.getSource(sid);
+          if (r2 === undefined || r2.status !== 'RUNNING' || normalizeSourcePuller(r2.puller) === undefined) return;
+          if (tm.isRunning(key)) return;
+          try {
+            startSourcePuller(r2);
+          } catch {
+            // Lỗi resolve: alert ở lần crash tiếp theo, operator xem log.
+          }
+        }, tcRestartDelayMs);
+        t.unref?.();
+        pendingTcRestarts.set(key, t);
+        return;
+      }
       const slash = key.indexOf('/');
       if (slash < 0) return;
       const sid = key.slice(0, slash);
@@ -622,8 +653,13 @@ export function createApi(opts: ApiOptions = {}): {
     },
   });
 
-  /** Nút Test SRT (docs/16 T2): đóng vai caller bắt tay vào listener của ta. */
-  function probeSrtListener(port: number): Promise<{ ok: boolean; detail: string }> {
+  /**
+   * Nút Test SRT (docs/16 T2): đóng vai caller bắt tay vào listener của ta
+   * (srt-listen), hoặc bắt tay tới listener phía họ (srt-caller — kiểm tra
+   * tới được VTVgo trước khi đẩy thật). Sống quá 8s = pass.
+   * Chỉ chứng minh BẮT TAY, không chứng minh có dữ liệu (xem docs/16 §4).
+   */
+  function probeSrtTarget(host: string, port: number, label: string): Promise<{ ok: boolean; detail: string }> {
     return new Promise((resolve) => {
       let done = false;
       const finish = (r: { ok: boolean; detail: string }): void => {
@@ -634,7 +670,7 @@ export function createApi(opts: ApiOptions = {}): {
       };
       let child: ReturnType<typeof spawn>;
       try {
-        child = spawn(srtBin, [`srt://127.0.0.1:${port}`, 'file:///dev/null'], {
+        child = spawn(srtBin, [`srt://${host}:${port}`, 'file:///dev/null'], {
           stdio: ['ignore', 'ignore', 'pipe'],
         });
       } catch {
@@ -648,17 +684,17 @@ export function createApi(opts: ApiOptions = {}): {
       });
       child.on('error', () => finish({ ok: false, detail: `không chạy được ${srtBin} — kiểm tra VTC_SRT_BIN` }));
       child.on('exit', (code) => {
-        // Chết nhanh = handshake thất bại (listener không mở / từ chối).
-        finish({ ok: false, detail: `srt listener :${port} không bắt tay được (exit ${String(code)}): ${err.trim().slice(-300)}` });
+        // Chết nhanh = handshake thất bại (đầu xa không mở / từ chối).
+        finish({ ok: false, detail: `${label} không bắt tay được (exit ${String(code)}): ${err.trim().slice(-300)}` });
       });
       const timer = setTimeout(() => {
-        // Còn sống sau 8s = handshake OK, đang nhận stream → pass.
+        // Còn sống sau 8s = handshake OK → pass.
         try {
           child.kill('SIGKILL');
         } catch {
           /* đã chết */
         }
-        finish({ ok: true, detail: `srt listener :${port} bắt tay OK (nhận stream 8s)` });
+        finish({ ok: true, detail: `${label} bắt tay OK (giữ kết nối 8s)` });
       }, 8000);
       timer.unref?.();
     });
@@ -671,9 +707,15 @@ export function createApi(opts: ApiOptions = {}): {
     return JSON.stringify({ p: n.presetIds, o: n.outputs, e: n.engine ?? 'cpu' });
   }
 
+  /** Key so sánh cấu hình puller — đổi là hot-restart puller (không động tsp). */
+  function pullerCfgKey(p: SourceRecord['puller']): string {
+    const n = normalizeSourcePuller(p);
+    return n === undefined ? '' : JSON.stringify(n);
+  }
+
   /**
-   * Fail-fast lúc tạo/sửa source: preset/output transcode phải hợp lệ NGAY
-   * (đừng để tới lúc start mới nổ). Trả message lỗi hoặc null = đạt.
+   * Fail-fast lúc tạo/sửa source: preset/output transcode + puller phải hợp lệ
+   * NGAY (đừng để tới lúc start mới nổ). Trả message lỗi hoặc null = đạt.
    */
   function checkTranscodeRefs(s: SourceConfig): string | null {
     for (const c of s.channels) {
@@ -688,7 +730,77 @@ export function createApi(opts: ApiOptions = {}): {
         return `kênh ${c.name}: ${e instanceof Error ? e.message : 'output sai'}`;
       }
     }
+    if (s.puller !== undefined) {
+      try {
+        parsePuller(s.puller);
+      } catch (e) {
+        return `puller: ${e instanceof Error ? e.message : 'puller sai'}`;
+      }
+    }
     return null;
+  }
+
+  /**
+   * Chống trùng tài nguyên transcode TOÀN HỆ (docs/16 §10): 2 kênh cùng
+   * loopbackPort thì 2 fork tsp xả chung 1 cổng UDP → ffmpeg ăn rác; 2 kênh
+   * cùng srt-listen port thì ffmpeg thứ 2 bind rớt lúc start. Chặn từ lúc nhập.
+   */
+  function checkGlobalTranscodePorts(all: SourceConfig[]): string | null {
+    const loop = new Map<number, string>();
+    const srt = new Map<number, string>();
+    const mcast = new Map<string, string>();
+    for (const s of all) {
+      for (const c of s.channels) {
+        const t = normalizeChannelTranscode(c.transcode);
+        if (t === undefined || !t.enabled) continue;
+        const who = `${s.id}/${c.name}`;
+        const dupLoop = loop.get(t.loopbackPort);
+        if (dupLoop !== undefined) return `loopbackPort ${t.loopbackPort} bị trùng (${dupLoop} và ${who}) — 1 kênh 1 cổng`;
+        loop.set(t.loopbackPort, who);
+        for (const o of t.outputs) {
+          if (!o.enabled) continue;
+          if (o.type === 'srt-listen' && o.port !== undefined) {
+            const dup = srt.get(o.port);
+            if (dup !== undefined) return `cổng srt-listen ${o.port} bị trùng (${dup} và ${who}) — 1 port 1 rendition`;
+            srt.set(o.port, who);
+          }
+          if (o.type === 'udp-mcast' && o.group !== undefined && o.port !== undefined) {
+            const k = `${o.group}:${o.port}`;
+            const dup = mcast.get(k);
+            if (dup !== undefined) return `nhóm multicast ${k} bị trùng (${dup} và ${who})`;
+            mcast.set(k, who);
+          }
+        }
+      }
+    }
+    return null;
+  }
+
+  //-- Puller RTMP→UDP lifecycle (docs/16 §5): key `pull/<sourceId>` ------------
+  const pullKey = (sourceId: string): string => `pull/${sourceId}`;
+
+  /** Spawn puller cho source (ném lỗi rõ). Gọi TRƯỚC khi start tsp. */
+  function startSourcePuller(rec: SourceRecord): number | null {
+    const p = normalizeSourcePuller(rec.puller);
+    if (p === undefined) return null;
+    const args = buildPullerArgs({ rtmpUrl: p.rtmpUrl, streamKey: p.streamKey, udpPort: p.udpPort });
+    return tm.start(pullKey(rec.id), args);
+  }
+
+  /** Diệt puller (không động tsp). Luôn resolve. */
+  async function stopSourcePuller(sourceId: string): Promise<void> {
+    const k = pullKey(sourceId);
+    noRestartTc.add(k);
+    try {
+      await tm.stop(k);
+    } finally {
+      noRestartTc.delete(k);
+    }
+    const t = pendingTcRestarts.get(k);
+    if (t !== undefined) {
+      clearTimeout(t);
+      pendingTcRestarts.delete(k);
+    }
   }
 
   const requireAuth = makeRequireAuth(jwtSecret);
@@ -1512,6 +1624,8 @@ export function createApi(opts: ApiOptions = {}): {
         }
         const tcErr = checkTranscodeRefs(body); // preset/output phải tồn tại từ lúc tạo
         if (tcErr !== null) return send(res, 400, { error: tcErr });
+        const gErr = checkGlobalTranscodePorts([...store.listSources(), body]); // chống trùng cổng toàn hệ
+        if (gErr !== null) return send(res, 400, { error: gErr });
         const dup = duplicateChannelName([...store.listSources(), body]);
         if (dup !== null) return send(res, 400, { error: dup });
         const mapErr = checkPartnerMapping([...store.listSources(), body]);
@@ -1548,6 +1662,8 @@ export function createApi(opts: ApiOptions = {}): {
           const tcErr = checkTranscodeRefs(merged);
           if (tcErr !== null) return send(res, 400, { error: tcErr });
           const withMerged = store.listSources().map((s) => (s.id === id ? merged : s));
+          const gErr = checkGlobalTranscodePorts(withMerged); // chống trùng cổng toàn hệ
+          if (gErr !== null) return send(res, 400, { error: gErr });
           const dup = duplicateChannelName(withMerged);
           if (dup !== null) return send(res, 400, { error: dup });
           const mapErr = checkPartnerMapping(withMerged);
@@ -1571,6 +1687,22 @@ export function createApi(opts: ApiOptions = {}): {
           if (confKey(merged) === confKey(cur)) {
             const rec = store.updateMeta(id, { retentionDays: patch.retentionDays, channels: merged.channels });
             savePersisted();
+            // Hot-update puller RTMP (docs/16 §5): input tsp không đổi nên chỉ
+            // restart puller, không động tsp.
+            if (pullerCfgKey(cur.puller) !== pullerCfgKey(merged.puller) && rec.status === 'RUNNING') {
+              await stopSourcePuller(id);
+              const after = store.getSource(id);
+              if (after !== undefined && normalizeSourcePuller(after.puller) !== undefined) {
+                try {
+                  startSourcePuller(after);
+                  logger.info(`hot-update puller ${id} (không restart tsp)`);
+                } catch (e) {
+                  logger.warn(`hot-update puller ${id} thất bại: ${e instanceof Error ? e.message : 'lỗi không rõ'}`);
+                }
+              } else {
+                logger.info(`gỡ puller ${id} (không restart tsp)`);
+              }
+            }
             // Hot-update tầng endpoint transcode (docs/16 §8.2): kênh vẫn enabled
             // mà preset/output/engine đổi → restart mỗi ffmpeg, không động tsp.
             for (const c of merged.channels) {
@@ -1606,6 +1738,7 @@ export function createApi(opts: ApiOptions = {}): {
         if (m === 'DELETE') {
           if (!isAdminReq(req)) return send(res, 403, { error: FORBIDDEN });
           clearPending(id); // hủy restart đã hẹn (nếu crash trước đó)
+          await stopSourcePuller(id).catch(() => {}); // diệt puller đi kèm
           await stopSourceTranscodes(id).catch(() => {}); // diệt ffmpeg đi kèm
           try {
             await pm.stop(id).catch(() => {});
@@ -1640,6 +1773,11 @@ export function createApi(opts: ApiOptions = {}): {
           throw e;
         }
         const gen = writeConfFile({ ...r, confRev: r.confRev }, confDir);
+        try {
+          startSourcePuller(r); // puller RTMP trước để tsp có dữ liệu ngay (không có puller thì no-op)
+        } catch (e) {
+          return send(res, 500, { error: `start puller thất bại: ${e instanceof Error ? e.message : 'lỗi không rõ'}` });
+        }
         const pid = pm.start(id, gen.filePath ?? `${confDir}/${id}.conf`);
         store.setStatus(id, 'RUNNING', pid);
         savePersisted();
@@ -1653,6 +1791,7 @@ export function createApi(opts: ApiOptions = {}): {
         if (!isAdminReq(req)) return send(res, 403, { error: FORBIDDEN });
         noRestart.add(id); // đánh dấu stop tay để onExit không restart
         clearPending(id);
+        await stopSourcePuller(id); // diệt puller + ffmpeg trước, tsp sau
         await stopSourceTranscodes(id); // diệt ffmpeg trước, tsp sau (docs/16 §9.1)
         try {
           await pm.stop(id);
@@ -1767,6 +1906,12 @@ export function createApi(opts: ApiOptions = {}): {
         if (structural && rec.status === 'RUNNING') {
           return send(res, 400, { error: 'bật/tắt transcode hoặc đổi loopbackPort là thay đổi cấu trúc — stop source trước' });
         }
+        // Chống trùng cổng toàn hệ với trạng thái đề xuất (kênh này thay bằng t).
+        const hypothetical = store
+          .listSources()
+          .map((s) => (s.id === id ? { ...s, channels: s.channels.map((c) => (c.name === name ? { ...c, transcode: t } : c)) } : s));
+        const gErr = checkGlobalTranscodePorts(hypothetical);
+        if (gErr !== null) return send(res, 400, { error: gErr });
         store.updateMeta(id, { channels: rec.channels.map((c) => (c.name === name ? { ...c, transcode: t } : c)) });
         savePersisted();
         let restarted = false;
@@ -1816,17 +1961,22 @@ export function createApi(opts: ApiOptions = {}): {
         send(res, 200, { ok: true });
         return;
       }
-      // POST .../srt-test {port} — đóng vai caller bắt tay vào srt-listen của kênh.
+      // POST .../srt-test {port} — bắt tay SRT: srt-listen thì đóng vai caller
+      // vào cổng của ta; srt-caller thì bắt tay tới listener phía họ (kiểm tra
+      // tới được đối tác trước khi đẩy thật).
       if (m === 'POST' && action === 'srt-test') {
         const b = (await readJson(req)) as { port?: number };
         if (!Number.isInteger(b.port)) return send(res, 400, { error: 'thiếu port (số nguyên)' });
         const out = (ch.transcode?.outputs ?? []).find(
-          (o) => o.enabled && o.type === 'srt-listen' && o.port === b.port,
+          (o) => o.enabled && (o.type === 'srt-listen' || o.type === 'srt-caller') && o.port === b.port,
         );
         if (out === undefined) {
-          return send(res, 400, { error: `port ${String(b.port)} không phải srt-listen output đang enabled của kênh ${name}` });
+          return send(res, 400, { error: `port ${String(b.port)} không phải srt-listen/srt-caller output đang enabled của kênh ${name}` });
         }
-        const r = await probeSrtListener(b.port as number);
+        const r =
+          out.type === 'srt-caller'
+            ? await probeSrtTarget(out.host ?? '', out.port ?? 0, `srt-caller tới ${out.host ?? ''}:${String(out.port ?? 0)}`)
+            : await probeSrtTarget('127.0.0.1', b.port as number, `srt listener :${String(b.port)}`);
         send(res, r.ok ? 200 : 502, r);
         return;
       }
@@ -1879,6 +2029,12 @@ export function createApi(opts: ApiOptions = {}): {
               try {
                 ensureSourceDirs(r);
                 const gen = writeConfFile({ ...r, confRev: r.confRev }, confDir);
+                try {
+                  startSourcePuller(r);
+                } catch {
+                  store.setStatus(sid, 'ERROR');
+                  continue;
+                }
                 const pid = pm.start(sid, gen.filePath ?? `${confDir}/${sid}.conf`);
                 store.setStatus(sid, 'RUNNING', pid);
                 scheduleTcStarts(sid);
@@ -1964,6 +2120,12 @@ export function createApi(opts: ApiOptions = {}): {
               try {
                 ensureSourceDirs(cur);
                 const gen = writeConfFile({ ...cur, confRev: cur.confRev }, confDir);
+                try {
+                  startSourcePuller(cur);
+                } catch {
+                  store.setStatus(t.id, 'ERROR');
+                  continue;
+                }
                 const pid = pm.start(t.id, gen.filePath ?? `${confDir}/${t.id}.conf`);
                 store.setStatus(t.id, 'RUNNING', pid);
                 scheduleTcStarts(t.id);

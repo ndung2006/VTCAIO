@@ -4,7 +4,7 @@
 //=============================================================================
 
 import type { SourceConfig } from '../core/types.js';
-import { normalizeChannelTranscode } from '../core/TranscodeConfigGenerator.js';
+import { normalizeChannelTranscode, normalizeSourcePuller } from '../core/TranscodeConfigGenerator.js';
 import type { UserRecord } from './auth.js';
 
 /** Bản ghi Source kèm rev + trạng thái (DB thật sẽ thêm pid, createdAt...). */
@@ -61,13 +61,14 @@ export class Store {
    */
   updateMeta(
     id: string,
-    patch: { retentionDays?: number | undefined; channels?: SourceConfig['channels'] },
+    patch: { retentionDays?: number | undefined; channels?: SourceConfig['channels']; puller?: SourceConfig['puller'] },
   ): SourceRecord {
     const cur = this.sources.get(id);
     if (cur === undefined) throw new Error(`Source ${id} không tồn tại`);
-    const clean: { retentionDays?: number | undefined; channels?: SourceConfig['channels'] } = {};
+    const clean: { retentionDays?: number | undefined; channels?: SourceConfig['channels']; puller?: SourceConfig['puller'] } = {};
     if (patch.retentionDays !== undefined) clean.retentionDays = patch.retentionDays;
     if (patch.channels !== undefined) clean.channels = patch.channels;
+    if (patch.puller !== undefined) clean.puller = normalizeSourcePuller(patch.puller);
     const next: SourceRecord = { ...cur, ...clean, id: cur.id };
     this.sources.set(id, next);
     return next;
@@ -130,6 +131,13 @@ export class Store {
           c.transcode = t;
         }
       }
+    }
+    // Puller RTMP (docs/16 §5): sai/thiếu → undefined = nguồn trực tiếp.
+    const p = normalizeSourcePuller(norm.puller);
+    if (p === undefined) {
+      delete norm.puller;
+    } else {
+      norm.puller = p;
     }
     if (norm.status === 'RUNNING') {
       // PID cũ đã chết theo container — hạ về STOPPED, boot sẽ auto-start lại.

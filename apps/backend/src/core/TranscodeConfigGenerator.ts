@@ -14,7 +14,7 @@
 //=============================================================================
 
 import { z } from 'zod';
-import type { ChannelTranscode, TranscodeEngine, TranscodeOutput, TranscodePreset } from './types.js';
+import type { ChannelTranscode, SourcePuller, TranscodeEngine, TranscodeOutput, TranscodePreset } from './types.js';
 
 export class TranscodeError extends Error {}
 
@@ -22,6 +22,9 @@ export class TranscodeError extends Error {}
 
 export const LOOPBACK_PORT_MIN = 6000;
 export const LOOPBACK_PORT_MAX = 6099;
+/** Dải UDP puller→tsp (docs/16 §10): tách khỏi loopback tsp→ffmpeg để dễ đọc log. */
+export const PULLER_UDP_PORT_MIN = 6100;
+export const PULLER_UDP_PORT_MAX = 6199;
 export const SRT_PORT_MIN = 9000;
 export const SRT_PORT_MAX = 9199;
 export const MCAST_OUT_PORT_MIN = 7000;
@@ -117,6 +120,11 @@ const outputSchema = z
     const need = (cond: boolean, field: string, msg: string): void => {
       if (!cond) ctx.addIssue({ code: z.ZodIssueCode.custom, path: [field], message: msg });
     };
+    // Mirror FE (lib/transcode.ts): đã có ref mà ref trống → chặn ở validate,
+    // khỏi đợi tới lúc spawn (fail-fast 2 lớp).
+    if ((o.type === 'srt-listen' || o.type === 'srt-caller') && o.passphraseRef !== undefined) {
+      need(o.passphraseRef !== '', 'passphraseRef', 'đã bật mã hóa nhưng ref trống');
+    }
     switch (o.type) {
       case 'srt-listen':
         need(o.port !== undefined, 'port', 'srt-listen bắt buộc có port');
@@ -195,6 +203,64 @@ export function parseSecretsEnv(s: string): Record<string, string> {
     if (ref !== '' && val !== '') out[ref] = val;
   }
   return out;
+}
+
+//-- Puller RTMP→UDP (docs/16 §5, T3-wiring) --------------------------------------
+// TSDuck không đọc RTMP: 1 ffmpeg remux `-c copy` (nhẹ CPU, không encode lại)
+// từ MediaMTX ra UDP localhost, tsp ingest UDP đó như nguồn thường.
+
+const pullerSchema = z.object({
+  rtmpUrl: z.string().min(1, 'thiếu rtmpUrl').max(512),
+  streamKey: z.string().min(1, 'thiếu streamKey').max(256),
+  udpPort: z.number().int().min(PULLER_UDP_PORT_MIN).max(PULLER_UDP_PORT_MAX),
+});
+
+/** Validate 1 puller (ném TranscodeError). */
+export function parsePuller(u: unknown): SourcePuller {
+  const r = pullerSchema.safeParse(u);
+  if (!r.success) throw new TranscodeError(`puller sai: ${r.error.issues.map((i) => `${i.path.join('.')}: ${i.message}`).join('; ')}`);
+  return { ...r.data };
+}
+
+/** Chuẩn hóa puller đọc từ DB cũ (thiếu/sai → undefined = nguồn trực tiếp). */
+export function normalizeSourcePuller(p: SourcePuller | undefined): SourcePuller | undefined {
+  if (p === undefined) return undefined;
+  try {
+    return parsePuller(p);
+  } catch {
+    return undefined;
+  }
+}
+
+export interface PullerJob {
+  rtmpUrl: string;
+  streamKey: string;
+  udpPort: number;
+  /**
+   * Đè input RTMP bằng input khác (lab/test). Production luôn là
+   * `${rtmpUrl}/${streamKey}`. Spawn argv trực tiếp nên không lo injection.
+   */
+  inputUrl?: string | undefined;
+}
+
+/**
+ * Sinh argv puller: `-i rtmp://...` → `-c copy -f mpegts udp://127.0.0.1:port`.
+ * Giữ `-progress pipe:1` để TranscodeManager giám sát như ffmpeg thường.
+ */
+export function buildPullerArgs(job: PullerJob): string[] {
+  const p = parsePuller({ rtmpUrl: job.rtmpUrl, streamKey: job.streamKey, udpPort: job.udpPort });
+  const input = job.inputUrl !== undefined && job.inputUrl !== '' ? job.inputUrl : `${p.rtmpUrl.replace(/\/+$/, '')}/${p.streamKey}`;
+  if (input.trim() === '') throw new TranscodeError('puller input rỗng');
+  return [
+    '-hide_banner',
+    '-nostdin',
+    '-loglevel', 'warning',
+    '-progress', 'pipe:1',
+    '-i', input,
+    '-map', '0',
+    '-c', 'copy',
+    '-f', 'mpegts', `udp://127.0.0.1:${p.udpPort}?pkt_size=1316`,
+  ];
 }
 
 //-- URL input + dòng fork -------------------------------------------------------
