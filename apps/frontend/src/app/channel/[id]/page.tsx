@@ -62,7 +62,9 @@ export default function ChannelPage({ params }: { params: { id: string } }): Rea
   // Player 2 chế độ: live mặc định, vod khi Xem từ EPG.
   const [vod, setVod] = useState<{ url: string; title: string } | null>(null);
   // Nguồn xem/trích xuất: bản gốc (GHI trước transcode) hay bản sau-encode.
+  // Mặc định theo kênh: bật transcode → sau, không bật → gốc (user đổi thì giữ).
   const [vodSrc, setVodSrc] = useState<'raw' | 'after'>('raw');
+  const [vodSrcTouched, setVodSrcTouched] = useState(false);
   // EPG: bấm 1 chương trình để chọn → thanh dưới hiện khoảng giờ + nút Xem/Trích xuất.
   const [selId, setSelId] = useState<string | null>(null);
   // Truyền dẫn (admin): cần sourceId + trạng thái source chứa kênh này.
@@ -85,6 +87,15 @@ export default function ChannelPage({ params }: { params: { id: string } }): Rea
   useEffect(() => {
     void loadSrc();
   }, [loadSrc]);
+  // Mặc định nguồn theo kênh (chưa bị user đổi tay): bật transcode → sau.
+  useEffect(() => {
+    setVodSrcTouched(false);
+  }, [name]);
+  useEffect(() => {
+    if (!vodSrcTouched && srcInfo !== null) {
+      setVodSrc(srcInfo.transcode?.enabled === true ? 'after' : 'raw');
+    }
+  }, [srcInfo, vodSrcTouched]);
   // Dựng link sau-transcode khi đã có token + cấu hình output HLS (không gọi API thêm).
   useEffect(() => {
     const outs = srcInfo?.transcode?.outputs ?? [];
@@ -251,30 +262,21 @@ export default function ChannelPage({ params }: { params: { id: string } }): Rea
       <div className="flex-1">
         <Header onMenu={() => {}} />
         <main className="space-y-4 p-4">
-          <h1 className="text-xl font-bold uppercase">Kênh truyền hình {name}</h1>
-          <div className="flex items-center gap-2 rounded-xl bg-white p-3 shadow">
-            <code className="flex-1 truncate text-sm text-slate-600">
-              {link === '' ? 'Đang cấp link xem…' : link}
-            </code>
-            {link !== '' && <CopyButton text={link} />}
+          <div className="flex flex-wrap items-center gap-2">
+            <h1 className="text-xl font-bold uppercase">Kênh truyền hình {name}</h1>
+            <div className="ml-auto flex gap-2">
+              <CopyButton text={link} label="Copy link gốc" />
+              <CopyButton
+                text={tcLinks[0]?.url ?? ''}
+                label={tcLinks.length > 1 ? `Copy link Transcode (${tcLinks.length})` : 'Copy link Transcode'}
+                disabled={tcLinks.length === 0}
+              />
+            </div>
           </div>
           <p className="text-xs text-slate-500">
             Link có hạn dùng 4 giờ — hết hạn thì trình phát tự cấp lại, link đã copy đi thì hết hiệu lực.
+            {tcLinks.length === 0 && ' (Chưa có link sau-transcode: thêm output HLS ở tab Truyền dẫn.)'}
           </p>
-          {tcLinks.length > 0 && (
-            <div className="space-y-2 rounded-xl bg-emerald-50 p-3 shadow">
-              <p className="text-sm font-semibold">LINK SAU TRANSCODE (test bản đã encode)</p>
-              {tcLinks.map((t) => (
-                <div key={t.preset} className="flex items-center gap-2">
-                  <span className="shrink-0 rounded bg-emerald-100 px-2 py-0.5 font-mono text-xs font-semibold">
-                    {t.preset}
-                  </span>
-                  <code className="min-w-0 flex-1 truncate text-xs text-slate-600">{t.url}</code>
-                  <CopyButton text={t.url} />
-                </div>
-              ))}
-            </div>
-          )}
           {linkErr !== '' && <p className="text-sm text-red-600">{linkErr}</p>}
           {found === false &&
             (me !== null && me !== undefined && me.role !== 'admin' ? (
@@ -310,7 +312,10 @@ export default function ChannelPage({ params }: { params: { id: string } }): Rea
                   {srcInfo?.transcode?.recordPresetId !== undefined && (
                     <select
                       value={vodSrc}
-                      onChange={(e) => setVodSrc(e.target.value === 'after' ? 'after' : 'raw')}
+                      onChange={(e) => {
+                        setVodSrc(e.target.value === 'after' ? 'after' : 'raw');
+                        setVodSrcTouched(true);
+                      }}
                       title="Nguồn xem lại/trích xuất"
                       className="ml-auto rounded border px-2 py-1 text-xs"
                     >
