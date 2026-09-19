@@ -618,25 +618,42 @@ export function buildFfmpegArgs(job: FfmpegJob): string[] {
   const videoPresets = presets.filter((p) => p.video !== null && usedIds.has(p.id));
   const videoIdx = new Map<string, number>();
   videoPresets.forEach((p, i) => videoIdx.set(p.id, i));
-  // Preset vừa serve vừa ghi: 1 nhánh filter KHÔNG map 2 lần được
-  // ("was already used elsewhere") → split riêng nhánh ghi [vIr].
-  const servedIds = new Set(
-    outputs.filter((o) => (byId.get(o.presetId)?.video ?? null) !== null).map((o) => o.presetId),
-  );
-  const needsSplit = (id: string): boolean => servedIds.has(id) && recordPreset?.id === id;
-  const recLabel = (id: string): string => {
-    const vi = videoIdx.get(id) ?? 0;
-    return needsSplit(id) ? `[v${vi}r]` : `[v${vi}]`;
+  // MỖI consumer (output serve / ghi đĩa) cần 1 nhánh RIÊNG: 1 label filter
+  // KHÔNG map 2 lần được ("was already used elsewhere", exit 234 — gặp thật ở
+  // Prod khi 2 outputs cùng rendition). Consumer đầu giữ [vI], các consumer
+  // sau lấy [vIx1], [vIx2]... theo thứ tự outputs rồi tới ghi đĩa.
+  const useCount = new Map<string, number>();
+  const countUse = (pid: string): void => {
+    useCount.set(pid, (useCount.get(pid) ?? 0) + 1);
+  };
+  outputs.forEach((o) => {
+    if ((byId.get(o.presetId)?.video ?? null) !== null) countUse(o.presetId);
+  });
+  if (recordPreset !== undefined) countUse(recordPreset.id);
+  const labelCtr = new Map<string, number>();
+  const takeLabel = (pid: string): string => {
+    const vi = videoIdx.get(pid) ?? 0;
+    const n = labelCtr.get(pid) ?? 0;
+    labelCtr.set(pid, n + 1);
+    return n === 0 ? `[v${vi}]` : `[v${vi}x${n}]`;
   };
 
-  // Dựng filter_complex: deinterlace + fps 1 lần rồi split cho N rendition.
+  // Dựng filter_complex: deinterlace + fps 1 lần rồi split cho N rendition,
+  // preset nào nhiều consumer thì split phụ ra đủ nhánh.
   const filters: string[] = [];
+  const splitLabels = (pid: string): string => {
+    const vi = videoIdx.get(pid) ?? 0;
+    const c = useCount.get(pid) ?? 1;
+    let s = `[v${vi}]`;
+    for (let k = 1; k < c; k++) s += `[v${vi}x${k}]`;
+    return s;
+  };
   if (videoPresets.length === 1) {
     const p = videoPresets[0];
     if (p?.video === null || p?.video === undefined) throw new TranscodeError('lỗi nội bộ filter');
-    if (p !== undefined && needsSplit(p.id)) {
-      filters.push(`[0:v]yadif,fps=25,scale=${p.video.width}:${p.video.height}[v0t];[v0t]split=2[v0][v0r]`);
-    } else {
+    if (p !== undefined && (useCount.get(p.id) ?? 1) > 1) {
+      filters.push(`[0:v]yadif,fps=25,scale=${p.video.width}:${p.video.height}[v0t];[v0t]split=${useCount.get(p.id)}${splitLabels(p.id)}`);
+    } else if (p !== undefined) {
       filters.push(`[0:v]yadif,fps=25,scale=${p.video.width}:${p.video.height}[v0]`);
     }
   } else if (videoPresets.length > 1) {
@@ -644,8 +661,9 @@ export function buildFfmpegArgs(job: FfmpegJob): string[] {
     filters.push(`[0:v]yadif,fps=25,split=${videoPresets.length}${splits}`);
     videoPresets.forEach((p, i) => {
       if (p.video === null) throw new TranscodeError('lỗi nội bộ filter');
-      if (needsSplit(p.id)) {
-        filters.push(`[s${i}]scale=${p.video.width}:${p.video.height}[v${i}t];[v${i}t]split=2[v${i}][v${i}r]`);
+      const c = useCount.get(p.id) ?? 1;
+      if (c > 1) {
+        filters.push(`[s${i}]scale=${p.video.width}:${p.video.height}[v${i}t];[v${i}t]split=${c}${splitLabels(p.id)}`);
       } else {
         filters.push(`[s${i}]scale=${p.video.width}:${p.video.height}[v${i}]`);
       }
@@ -684,9 +702,8 @@ export function buildFfmpegArgs(job: FfmpegJob): string[] {
       );
     } else {
       const v = p.video;
-      const vi = videoIdx.get(p.id) ?? 0;
       args.push(
-        '-map', `[v${vi}]`, '-map', '0:a',
+        '-map', takeLabel(p.id), '-map', '0:a',
         ...videoEncoderArgs(engine, v.bitrateKbps, v.gop, v.fps, v.preset),
         '-c:a', 'aac', '-b:a', `${a.bitrateKbps}k`, '-ar', String(a.sampleRate), '-ac', String(a.channels),
       );
@@ -727,13 +744,13 @@ export function buildFfmpegArgs(job: FfmpegJob): string[] {
   }
   if (recordPreset !== undefined && recordPreset.video !== null && job.record !== undefined) {
     // Ghi sau-encode ra đĩa: chunk 60s (cùng nhịp GHI gốc để Timeshift tính
-    // discontinuity như nhau), giữ SID gốc trong PAT, reuse nhánh filter [vI]
-    // (map lại label đã có — không tốn thêm encode).
+    // discontinuity như nhau), giữ SID gốc trong PAT, map nhánh split riêng
+    // (không tốn thêm encode — decode/scale 1 lần, chỉ thêm mux).
     // Server tạo thư mục ở ensureSourceDirs (ffmpeg không tự tạo).
     const v = recordPreset.video;
     const a = recordPreset.audio;
     args.push(
-      '-map', recLabel(recordPreset.id), '-map', '0:a',
+      '-map', takeLabel(recordPreset.id), '-map', '0:a',
       ...videoEncoderArgs(engine, v.bitrateKbps, v.gop, v.fps, v.preset),
       '-c:a', 'aac', '-b:a', `${a.bitrateKbps}k`, '-ar', String(a.sampleRate), '-ac', String(a.channels),
       // Giữ SID gốc trong PAT để Timeshift/Export lọc SID như thường.

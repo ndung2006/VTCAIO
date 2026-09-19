@@ -508,9 +508,9 @@ describe('ghi sau-encode ra đĩa', () => {
     assert.ok(s.includes('-segment_time 60'), 'chunk 60s cùng nhịp GHI gốc');
     assert.ok(s.includes('-segment_format_options mpegts_service_id=807'), 'giữ SID gốc trong PAT (qua segment_format_options — -mpegts_service_id trần bị -f segment bỏ qua)');
     assert.ok(s.includes('-strftime 1'), 'tên file theo giờ (không đè khi restart)');
-    // map 2 nhánh đã split ([v0] serve + [v0r] record) — cùng 1 encode, 2 mux.
+    // map 2 nhánh đã split ([v0] serve + [v0x1] record) — cùng 1 encode, 2 mux.
     // Không tốn thêm encode (decode/scale 1 lần), chỉ thêm mux ghi đĩa.
-    const maps = args.filter((a) => a === '[v0]' || a === '[v0r]');
+    const maps = args.filter((a) => a === '[v0]' || a === '[v0x1]');
     assert.ok(maps.length >= 2, 'serve + ghi map 2 nhánh đã split');
     assert.ok(!s.includes('split=2[s'), '1 rendition dùng thì không split chính (chỉ split phụ ghi)');
   });
@@ -529,7 +529,7 @@ describe('ghi sau-encode ra đĩa', () => {
 });
 
 describe('ghi sau-encode: split nhánh ghi riêng', () => {
-  it('preset vừa serve vừa ghi → split [v0][v0r], record map [v0r]', () => {
+  it('preset vừa serve vừa ghi → split [v0][v0x1], record map [v0x1]', () => {
     const args = buildFfmpegArgs({
       channelName: 'dn1',
       loopbackPort: 6001,
@@ -538,8 +538,25 @@ describe('ghi sau-encode: split nhánh ghi riêng', () => {
       record: { dir: '/cap', presetId: 'p720', serviceId: 807 },
     });
     const s = args.join(' ');
-    assert.ok(s.includes('[v0t]split=2[v0][v0r]'), 'split nhánh ghi riêng');
-    assert.ok(s.includes('-map [v0r]') || s.includes('[v0r]'), 'record map nhánh riêng');
+    assert.ok(s.includes('[v0t]split=2[v0][v0x1]'), 'split nhánh ghi riêng');
+    assert.ok(s.includes('-map [v0x1]'), 'record map nhánh riêng');
+  });
+
+  it('2 outputs cùng rendition (case Prod RTMP+HLS) → mỗi output 1 nhánh', () => {
+    // Bug thật Prod 19/09: RTMP + HLS cùng 720p đều -map [v0] → exit 234.
+    const args = buildFfmpegArgs({
+      channelName: 'qtv1',
+      loopbackPort: 6001,
+      presets: presetsById(['p720']),
+      outputs: [
+        parseOutput({ type: 'rtmp-push', presetId: 'p720', enabled: true, url: 'rtmp://x/live/k' }),
+        parseOutput({ type: 'hls', presetId: 'p720', enabled: true }),
+      ],
+    });
+    const s = args.join(' ');
+    assert.ok(s.includes('[v0t]split=2[v0][v0x1]'), 'split đủ 2 nhánh serve');
+    const maps = args.filter((a) => a === '[v0]' || a === '[v0x1]');
+    assert.ok(maps.length >= 2, 'mỗi output map 1 nhánh riêng, không map trùng');
   });
 
   it('preset chỉ ghi (không serve) → map [v0] thẳng, không split', () => {

@@ -199,9 +199,10 @@ Quy ước hệ thống: **VTCAIO luôn mở listener** (đối tác caller kéo
 
 - ffmpeg ghi thẳng playlist + segment vào `<liveDir>/<kênh>/tc-<preset>/` (`index.m3u8`, `seg-%05d.ts`, segment 4s, giữ 6 bản, tự xóa cũ — live-only, không DVR).
 - Phục vụ qua route FE `/hls` sẵn có (`/hls/<kênh>/tc-<preset>/index.m3u8`): token ký theo **tên kênh gốc** nên không sửa auth; healthcheck HLS gốc không ảnh hưởng (đọc `index.m3u8` gốc từng kênh).
-- ffmpeg không tự tạo thư mục → `ensureSourceDirs` tạo khi start.
-- UI: chọn loại HLS trong output (không cần field phụ) + nút **Lấy link xem** (cấp token theo kênh) + copy.
+- ffmpeg không tự tạo thư mục → mọi đường spawn (start/hot-update) tạo trước (từng chết im vì thiếu dir).
+- UI: chọn loại HLS trong output (không cần field phụ) + nút **Lấy link xem** (cấp token + copy) + **Link đối tác** (pull token không hạn).
 - E2E ffmpeg thật (file DN1 1080i): playlist trượt chuẩn 4s, ffprobe đọc được H.264 + AAC, fps=129.
+- **Quy tắc filter (xương máu Prod 19/09): mỗi output 1 nhánh split riêng** (`[v0]`, `[v0x1]`...) — 1 label map 2 lần là ffmpeg exit **234** (`was already used elsewhere`). Gặp khi 2 outputs cùng rendition (VD RTMP+HLS cùng 720p).
 
 Không làm: Schedule, MPTS mux/statmux, DRM, caption, pre/post script, failover input.
 
