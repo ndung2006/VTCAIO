@@ -145,3 +145,23 @@ describe('TranscodeManager', () => {
     await m.stop('e');
   });
 });
+
+describe('TranscodeManager stop-timeout race', () => {
+  it('ffmpeg lì SIGTERM: stop() timeout vẫn dọn entry, start ngay được', async () => {
+    const dir = mkdtempSync(join(tmpdir(), 'vtc-tc-race-'));
+    try {
+      const p = join(dir, 'stubborn.sh');
+      writeFileSync(p, '#!/bin/sh\ntrap "" TERM\nexec sleep 60\n', 'utf8');
+      chmodSync(p, 0o755);
+      const m = new TranscodeManager({ ffmpegBin: p, killTimeoutMs: 200, progressTimeoutMs: 10000 });
+      m.start('r', []);
+      await m.stop('r');
+      assert.equal(m.isRunning('r'), false);
+      const pid2 = m.start('r', []);
+      assert.ok(pid2 > 0);
+      await m.stop('r');
+    } finally {
+      rmSync(dir, { recursive: true, force: true });
+    }
+  });
+});

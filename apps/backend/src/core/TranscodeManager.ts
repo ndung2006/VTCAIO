@@ -200,23 +200,33 @@ export class TranscodeManager extends EventEmitter {
       return;
     }
     await new Promise<void>((resolve) => {
-      const done = (): void => {
+      let finished = false;
+      const done = (timedOut: boolean): void => {
+        if (finished) return;
+        finished = true;
         clearTimeout(timer);
-        m.child.off('exit', done);
+        m.child.off('exit', doneExit);
+        if (timedOut && this.procs.get(key) === m) {
+          this.procs.delete(key);
+          this.crashLog.delete(key);
+          m.crashes = [];
+          this.emitStatus(key, 'STOPPED');
+        }
         resolve();
       };
+      const doneExit = (): void => done(false);
       const timer = setTimeout(() => {
         try {
           process.kill(-m.pid, 'SIGKILL');
         } catch {
           /* đã chết */
         }
-        done();
+        done(true);
       }, this.killTimeoutMs);
       timer.unref?.();
-      m.child.once('exit', done);
+      m.child.once('exit', doneExit);
       if (!this.procs.has(key)) {
-        done();
+        done(false);
       }
     });
   }
@@ -258,6 +268,9 @@ export class TranscodeManager extends EventEmitter {
   }
 
   private onExit(key: string, m: ManagedTranscode, code: number | null, signal: string | null): void {
+    // Entry đã bị stop() timeout dọn trước → exit event tới muộn, bỏ qua hoàn
+    // toàn (không đếm crash, không alert, không hẹn restart ma).
+    if (this.procs.get(key) !== m) return;
     const wasIntentional = m.intentionalStop;
     if (wasIntentional) {
       // Operator can thiệp (stop tay) = reset vòng đếm crash.

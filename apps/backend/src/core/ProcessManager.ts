@@ -123,25 +123,36 @@ export class ProcessManager extends EventEmitter {
       return;
     }
     // Chờ process thoát, timeout thì SIGKILL cả nhóm.
+    // Vá race như TranscodeManager (Prod 19/09): timeout resolve luôn trong khi
+    // entry còn trong map → start() ngay sau báo RUNNING oan. Timeout thì dọn
+    // entry ngay; exit event tới muộn bị onExit bỏ qua.
     await new Promise<void>((resolve) => {
-      const done = (): void => {
+      let finished = false;
+      const done = (timedOut: boolean): void => {
+        if (finished) return;
+        finished = true;
         clearTimeout(timer);
-        m.child.off('exit', done);
+        m.child.off('exit', doneExit);
+        if (timedOut && this.procs.get(sourceId) === m) {
+          this.procs.delete(sourceId);
+          this.emitStatus(sourceId, 'STOPPED');
+        }
         resolve();
       };
+      const doneExit = (): void => done(false);
       const timer = setTimeout(() => {
         try {
           process.kill(-m.pid, 'SIGKILL');
         } catch {
           /* đã chết */
         }
-        done();
+        done(true);
       }, this.killTimeoutMs);
       timer.unref?.();
-      m.child.once('exit', done);
+      m.child.once('exit', doneExit);
       // Nếu exit đã xảy ra trước khi đăng ký once (race), cleanup ở onExit đã chạy.
       if (!this.procs.has(sourceId)) {
-        done();
+        done(false);
       }
     });
   }
@@ -182,6 +193,9 @@ export class ProcessManager extends EventEmitter {
   }
 
   private onExit(sourceId: string, m: Managed, code: number | null, signal: string | null): void {
+    // Entry đã bị stop() timeout dọn trước → exit event tới muộn, bỏ qua hoàn
+    // toàn (không báo crash, không hẹn restart ma).
+    if (this.procs.get(sourceId) !== m) return;
     const wasIntentional = m.intentionalStop;
     this.procs.delete(sourceId);
     this.handlers?.onExit(sourceId, code, signal);

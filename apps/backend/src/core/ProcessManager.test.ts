@@ -71,3 +71,20 @@ describe('ProcessManager', () => {
     await pm.stop('NOPE');
   });
 });
+
+describe('ProcessManager stop-timeout race', () => {
+  it('process lì SIGTERM: stop() timeout vẫn dọn entry, start ngay được', async () => {
+    // Bug thật Prod 19/09: stop() resolve mà entry còn (exit event tới sau) →
+    // start() ngay báo RUNNING oan, watchdog restart thất bại.
+    const stubborn = '/tmp/vtc-fake-stubborn.sh';
+    writeFileSync(stubborn, '#!/bin/sh\ntrap "" TERM\nexec sleep 60\n', 'utf8');
+    chmodSync(stubborn, 0o755);
+    const pm = new ProcessManager({ tspBin: stubborn, killTimeoutMs: 200 });
+    pm.start('UTR', '/tmp/x.conf');
+    await pm.stop('UTR'); // SIGTERM bị lờ → timeout → SIGKILL → dọn entry ngay
+    assert.equal(pm.isRunning('UTR'), false);
+    const pid2 = pm.start('UTR', '/tmp/x.conf'); // trước fix: ném "đang RUNNING"
+    assert.ok(pid2 > 0);
+    await pm.stop('UTR');
+  });
+});
