@@ -254,9 +254,14 @@ export function TranscodePanel(props: {
         </div>
       </div>
       {showLog && status?.lastError !== null && status?.lastError !== undefined && status.lastError !== '' && (
-        <pre ref={logRef} className="max-h-96 overflow-auto rounded bg-red-50 p-2 font-mono text-xs text-red-700">
-          Lỗi ffmpeg/output mới nhất:{'\n'}{status.lastError}
-        </pre>
+        <div className="relative">
+          <pre ref={logRef} className="max-h-96 overflow-auto rounded bg-red-50 p-2 pr-20 font-mono text-xs text-red-700">
+            Lỗi ffmpeg/output mới nhất:{'\n'}{status.lastError}
+          </pre>
+          <div className="absolute right-2 top-2">
+            <CopyButton text={status.lastError} label="Copy log" />
+          </div>
+        </div>
       )}
       {msg !== '' && <p className="rounded bg-amber-50 px-3 py-2 text-sm text-slate-700">{msg}</p>}
       {!running && (
@@ -340,12 +345,19 @@ export function TranscodePanel(props: {
                   />
                 </label>
                 <div className="flex items-end gap-2">
-                  <label className="flex items-center gap-1 text-xs">
-                    <input type="checkbox" checked={o.enabled} onChange={(e) => setOutput(i, { enabled: e.target.checked })} />
-                    Bật
-                  </label>
+                  <button
+                    onClick={() => setOutput(i, { enabled: !o.enabled })}
+                    title={o.enabled ? 'Đang bật — bấm để tắt' : 'Đang tắt — bấm để bật'}
+                    aria-pressed={o.enabled}
+                    className={`relative h-5 w-9 shrink-0 rounded-full transition-colors ${o.enabled ? 'bg-green-600' : 'bg-slate-300'}`}
+                  >
+                    <span
+                      className={`absolute top-0.5 h-4 w-4 rounded-full bg-white shadow transition-all ${o.enabled ? 'left-[18px]' : 'left-0.5'}`}
+                    />
+                  </button>
+                  <span className="text-xs">{o.enabled ? 'Bật' : 'Tắt'}</span>
                   <button onClick={() => setOutputs((prev) => prev.filter((_, idx) => idx !== i))} className="rounded bg-slate-200 px-2 py-1 text-xs">
-                    Bỏ
+                    Xóa
                   </button>
                   {(o.type === 'srt-listen' || o.type === 'srt-caller') && o.enabled && o.port !== undefined && (
                     <button
