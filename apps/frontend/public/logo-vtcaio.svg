@@ -1,20 +1,21 @@
 <?xml version="1.0" encoding="UTF-8"?>
-<svg fill="#FFFFFF" version="1.1" id="Capa_1" xmlns="http://www.w3.org/2000/svg" xmlns:xlink="http://www.w3.org/1999/xlink"
+<svg version="1.1" id="Capa_1" xmlns="http://www.w3.org/2000/svg" xmlns:xlink="http://www.w3.org/1999/xlink"
 	 width="800px" height="800px" viewBox="0 0 30.25 30.25" xml:space="preserve">
 <g>
-	<path d="M29.75,4H0.5C0.224,4,0,4.224,0,4.5v21.25c0,0.275,0.224,0.5,0.5,0.5h29.25c0.275,0,0.5-0.225,0.5-0.5V4.5
+	<!-- Film strip body - màu giống cassette cũ -->
+	<path fill="#F4F5F8" stroke="#343C4B" stroke-width="0.6" d="M29.75,4H0.5C0.224,4,0,4.224,0,4.5v21.25c0,0.275,0.224,0.5,0.5,0.5h29.25c0.275,0,0.5-0.225,0.5-0.5V4.5
 		C30.25,4.224,30.025,4,29.75,4z M18.843,5.812h4.005v1.75h-4.005V5.812z M13.123,5.812h4.004v1.75h-4.004V5.812z M7.403,5.812
 		h4.004v1.75H7.403V5.812z M2,5.812h3.688v1.75H2V5.812z M5.688,24.438H2v-1.75h3.688V24.438z M11.407,24.438H7.403v-1.75h4.004
 		V24.438z M17.127,24.438h-4.004v-1.75h4.004V24.438z M22.848,24.438h-4.005v-1.75h4.005V24.438z M28.25,24.438h-3.688v-1.75h3.688
 		V24.438z M28.25,21.188H2V9.062h26.25V21.188z M28.25,7.562h-3.688v-1.75h3.688V7.562z"/>
-	<!-- VTC text centered in the film frame - white -->
-	<text x="15.125" y="16.2"
+	<!-- Chữ VTC - màu và font giống logo cũ -->
+	<text x="15.125" y="16.3"
 	      text-anchor="middle"
 	      dominant-baseline="middle"
-	      font-family="Arial Black, Arial, sans-serif"
+	      font-family="'Arial Black', Impact, 'Segoe UI Black', sans-serif"
 	      font-size="9.75"
 	      font-weight="900"
-	      fill="#FFFFFF"
-	      letter-spacing="0.4">VTC</text>
+	      fill="#343C4B"
+	      letter-spacing="0.5">VTC</text>
 </g>
 </svg>
