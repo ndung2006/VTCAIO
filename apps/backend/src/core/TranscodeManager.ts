@@ -28,7 +28,10 @@ interface ManagedTranscode {
   lastBitrateKbps: number | null;
   lastProgressAt: number | null;
   stdoutBuf: string;
-  stderrBuf: string;
+  /** Dòng stderr cuối kèm giờ xuất hiện (giữ tối đa 200 dòng để UI cuộn xem). */
+  stderrLines: string[];
+  /** Phần stderr chưa đủ 1 dòng (chunk lẻ). */
+  stderrTail: string;
 }
 
 export interface TranscodeManagerOptions {
@@ -57,6 +60,13 @@ export interface TranscodeSnapshot {
   startedAtMs: number;
   /** Vài dòng stderr cuối (lỗi ffmpeg/output như RTMP handshake fail) — để UI hiện. */
   lastError: string | null;
+}
+
+/** Giờ HH:MM:SS (giờ container, Prod đặt TZ Asia/Ho_Chi_Minh). */
+function clockNow(): string {
+  const d = new Date();
+  const p = (n: number): string => String(n).padStart(2, '0');
+  return `${p(d.getHours())}:${p(d.getMinutes())}:${p(d.getSeconds())}`;
 }
 
 // Dòng progress của `ffmpeg -progress pipe:1`: "fps=25.00",
@@ -100,8 +110,10 @@ export class TranscodeManager extends EventEmitter {
   snapshot(key: string): TranscodeSnapshot | undefined {
     const m = this.procs.get(key);
     if (m === undefined) return undefined;
-    // Lấy tối đa 15 dòng stderr cuối (bỏ dòng trống) để hiện lỗi output.
-    const tail = m.stderrBuf.split('\n').map((l) => l.trim()).filter((l) => l !== '').slice(-15).join('\n');
+    // Lấy tối đa 40 dòng stderr cuối (đã gắn giờ lúc nhận) để UI cuộn xem.
+    const lines = [...m.stderrLines];
+    if (m.stderrTail.trim() !== '') lines.push(`[${clockNow()}] ${m.stderrTail.trim()}`);
+    const tail = lines.slice(-40).join('\n');
     return {
       key,
       pid: m.pid,
@@ -111,7 +123,7 @@ export class TranscodeManager extends EventEmitter {
       lastProgressAt: m.lastProgressAt,
       crashCount: m.crashes.length,
       startedAtMs: m.startedAtMs,
-      lastError: tail === '' ? null : tail.slice(-2000),
+      lastError: tail === '' ? null : tail.slice(-4000),
     };
   }
 
@@ -167,7 +179,8 @@ export class TranscodeManager extends EventEmitter {
       lastBitrateKbps: null,
       lastProgressAt: null,
       stdoutBuf: '',
-      stderrBuf: '',
+      stderrLines: [],
+      stderrTail: '',
     };
     this.procs.set(key, m);
     this.emitStatus(key, 'RUNNING');
@@ -176,8 +189,7 @@ export class TranscodeManager extends EventEmitter {
       this.onProgress(key, m, chunk.toString('utf8'));
     });
     child.stderr?.on('data', (chunk: Buffer) => {
-      m.stderrBuf += chunk.toString('utf8');
-      if (m.stderrBuf.length > 64_000) m.stderrBuf = m.stderrBuf.slice(-8000);
+      this.onStderr(m, chunk.toString('utf8'));
     });
     child.on('exit', (code, signal) => {
       this.onExit(key, m, code, signal);
@@ -236,6 +248,21 @@ export class TranscodeManager extends EventEmitter {
   private emitStatus(key: string, s: SourceStatus): void {
     this.handlers?.onStatus(key, s);
     this.emit('status', key, s);
+  }
+
+  /** Drain stderr theo dòng, gắn giờ xuất hiện từng dòng (UI hiện log). */
+  private onStderr(m: ManagedTranscode, text: string): void {
+    m.stderrTail += text;
+    let idx: number;
+    while ((idx = m.stderrTail.indexOf('\n')) >= 0) {
+      const line = m.stderrTail.slice(0, idx).trim();
+      m.stderrTail = m.stderrTail.slice(idx + 1);
+      if (line === '') continue;
+      m.stderrLines.push(`[${clockNow()}] ${line}`);
+      // Giữ tối đa 200 dòng mới nhất (đủ cuộn xem, không phình RAM).
+      if (m.stderrLines.length > 200) m.stderrLines.splice(0, m.stderrLines.length - 200);
+    }
+    if (m.stderrTail.length > 8000) m.stderrTail = m.stderrTail.slice(-8000);
   }
 
   /** Parse từng dòng `-progress pipe:1`, giữ fps/bitrate mới nhất. */

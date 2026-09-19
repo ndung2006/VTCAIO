@@ -67,14 +67,16 @@ export function TranscodePanel(props: {
   const [minting, setMinting] = useState('');
   const [pullLinks, setPullLinks] = useState<Record<string, string>>({});
   const [mintingPull, setMintingPull] = useState('');
+  const [showLog, setShowLog] = useState(true);
   const logRef = useRef<HTMLPreElement | null>(null);
 
-  const scrollToLog = (): void => {
-    if (logRef.current !== null) {
-      logRef.current.scrollIntoView({ behavior: 'smooth', block: 'center' });
-    } else {
-      setMsg('Chưa có log lỗi ffmpeg — process chạy sạch hoặc chưa chạy.');
-    }
+  const toggleLog = (): void => {
+    setShowLog((prev) => {
+      if (!prev) {
+        setTimeout(() => logRef.current?.scrollIntoView({ behavior: 'smooth', block: 'center' }), 50);
+      }
+      return !prev;
+    });
   };
 
   const key = `${sourceId}/${channelName}`;
@@ -240,8 +242,8 @@ export function TranscodePanel(props: {
           </span>
         )}
         <div className="ml-auto flex gap-2">
-          <button onClick={scrollToLog} className="rounded bg-slate-200 px-3 py-1 text-sm" title="Cuộn tới log lỗi ffmpeg/output mới nhất">
-            Log
+          <button onClick={toggleLog} className="rounded bg-slate-200 px-3 py-1 text-sm" title="Ẩn/hiện log lỗi ffmpeg">
+            {showLog ? 'Ẩn log' : 'Hiện log'}
           </button>
           <button onClick={() => void doTc('start')} disabled={busy !== '' || !running} className="rounded bg-green-600 px-3 py-1 text-sm text-white disabled:opacity-50">
             Start ffmpeg
@@ -251,8 +253,8 @@ export function TranscodePanel(props: {
           </button>
         </div>
       </div>
-      {status?.lastError !== null && status?.lastError !== undefined && status.lastError !== '' && (
-        <pre ref={logRef} className="max-h-64 overflow-auto rounded bg-red-50 p-2 font-mono text-xs text-red-700">
+      {showLog && status?.lastError !== null && status?.lastError !== undefined && status.lastError !== '' && (
+        <pre ref={logRef} className="max-h-96 overflow-auto rounded bg-red-50 p-2 font-mono text-xs text-red-700">
           Lỗi ffmpeg/output mới nhất:{'\n'}{status.lastError}
         </pre>
       )}

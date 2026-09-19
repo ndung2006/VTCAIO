@@ -54,6 +54,13 @@ git clone https://github.com/ndung2006/VTCAIO /srv/vtcaio/repo
 cd /srv/vtcaio/repo && git checkout main
 cp .env.prod.example .env.prod && chmod 600 .env.prod && nano .env.prod
 sudo mkdir -p /mnt/Data/vtcaio/captures /mnt/Data/vtcaio/exports /opt/vtcaio/conf/sources /var/log/vtcaio
+# Muốn dồn toàn bộ dữ liệu ghi (GHI trước + sau-encode + trích xuất) sang ổ mount
+# riêng (VD /mnt/e/AIO): sudo mkdir -p /mnt/e/AIO/captures /mnt/e/AIO/exports
+# rồi đặt trong .env.prod:
+#   VTC_HOST_CAPTURE_DIR=/mnt/e/AIO/captures
+#   VTC_HOST_EXPORTS_DIR=/mnt/e/AIO/exports
+# Lưu ý ổ Windows qua drvfs: chậm hơn ổ Linux + không phân biệt hoa-thường
+# (kênh VTV1 và vtv1 sẽ đè nhau) + phải mount cố định trước khi backend up.
 sudo sh scripts/mount-ramdisk.sh   # mount /media/ramdisk/vtcaio (hệ cũ giữ /media/ramdisk/live)
 sudo cp scripts/sysctl-vtc.conf /etc/sysctl.d/99-vtc.conf && sudo sysctl --system  # rp_filter=0, rmem 25MB
 df -h /media/ramdisk/vtcaio

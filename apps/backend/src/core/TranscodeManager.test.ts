@@ -142,6 +142,7 @@ describe('TranscodeManager', () => {
     await sleep(300);
     const s = m.snapshot('e');
     assert.ok(s?.lastError?.includes('connection refused'), 'phải thấy dòng lỗi stderr');
+    assert.match(s?.lastError ?? '', /\[\d{2}:\d{2}:\d{2}\]/, 'mỗi dòng có giờ xuất hiện');
     await m.stop('e');
   });
 });
