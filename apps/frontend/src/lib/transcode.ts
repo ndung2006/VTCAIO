@@ -43,6 +43,41 @@ export interface SourcePuller {
   udpPort: number;
 }
 
+/** Loại đầu vào source (docs/16 §18) — sdi/hdmi giữ chỗ cho phase Encode sau. */
+export type SourceInputKind = 'ip' | 'sdi' | 'hdmi';
+
+/** Điểm trích Live/GHI: ingest (IP, Phase 1) hay encoded (Encode bắt buộc sau-encode). */
+export type SourceLiveCatchupFrom = 'ingest' | 'encoded';
+
+export interface SourceCapture {
+  device: string;
+  cardIndex?: number;
+  connection?: string;
+  formatCode?: string;
+  udpPort: number;
+  presetId?: string;
+  engine?: TranscodeEngine;
+}
+
+export const captureSchema = z.object({
+  device: z.string().min(1, 'thiếu tên card (ffmpeg thấy)').max(256),
+  cardIndex: z.number().int().min(0).max(15).optional(),
+  connection: z.string().max(16).optional(),
+  formatCode: z.string().max(16).optional(),
+  udpPort: z.number().int().min(6200).max(6299),
+  presetId: z.string().min(1).max(64).optional(),
+  engine: z.enum(['cpu', 'nvenc', 'qsv', 'vaapi']).optional(),
+});
+
+/** Validate capture → message lỗi hoặc null. undefined = không capture (qua). */
+export function validateCapture(p: SourceCapture | undefined): string | null {
+  if (p === undefined) return null;
+  const r = captureSchema.safeParse(p);
+  if (r.success) return null;
+  const first = r.error.issues[0];
+  return first !== undefined ? `${first.path.join('.')}: ${first.message}` : 'capture sai';
+}
+
 export const pullerSchema = z.object({
   rtmpUrl: z.string().min(1, 'thiếu URL RTMP (VD rtmp://127.0.0.1:1935/live)').max(512),
   streamKey: z.string().min(1, 'thiếu stream key').max(256),
@@ -180,6 +215,9 @@ export function validateChannelTranscode(t: ChannelTranscode): string | null {
   }
   if (t.enabled && t.presetIds.length === 0) return 'bật transcode nhưng chưa chọn preset nào';
   if (t.enabled && !t.outputs.some((o) => o.enabled)) return 'bật transcode nhưng chưa có output nào enabled';
+  const picked = new Set(t.presetIds);
+  const dangling = t.outputs.find((o) => o.enabled && !picked.has(o.presetId));
+  if (dangling !== undefined) return `output ${dangling.type} trỏ rendition "${dangling.presetId}" chưa tick chọn ở danh sách preset`;
   const ports = t.outputs.filter((o) => o.enabled && o.type === 'srt-listen').map((o) => o.port);
   if (new Set(ports).size !== ports.length) return 'cổng srt-listen bị trùng (1 port = 1 rendition)';
   return null;

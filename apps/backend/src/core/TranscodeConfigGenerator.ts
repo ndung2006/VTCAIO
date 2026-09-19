@@ -14,7 +14,14 @@
 //=============================================================================
 
 import { z } from 'zod';
-import type { ChannelTranscode, SourcePuller, TranscodeEngine, TranscodeOutput, TranscodePreset } from './types.js';
+import type {
+  ChannelTranscode,
+  SourceCapture,
+  SourcePuller,
+  TranscodeEngine,
+  TranscodeOutput,
+  TranscodePreset,
+} from './types.js';
 
 export class TranscodeError extends Error {}
 
@@ -25,6 +32,9 @@ export const LOOPBACK_PORT_MAX = 6099;
 /** Dải UDP puller→tsp (docs/16 §10): tách khỏi loopback tsp→ffmpeg để dễ đọc log. */
 export const PULLER_UDP_PORT_MIN = 6100;
 export const PULLER_UDP_PORT_MAX = 6199;
+/** Dải UDP capture-agent→tsp (docs/16 §18). */
+export const CAPTURE_UDP_PORT_MIN = 6200;
+export const CAPTURE_UDP_PORT_MAX = 6299;
 export const SRT_PORT_MIN = 9000;
 export const SRT_PORT_MAX = 9199;
 export const MCAST_OUT_PORT_MIN = 7000;
@@ -171,6 +181,20 @@ export function parseOutput(u: unknown): TranscodeOutput {
   return { ...r.data };
 }
 
+/**
+ * Output (enabled) phải trỏ preset có trong presetIds của kênh — không thì
+ * lúc spawn mới nổ `presetId không tồn tại`. Check sớm ở mọi đường nhập.
+ */
+export function checkOutputPresetRefs(presetIds: string[], outputs: TranscodeOutput[]): string | null {
+  const set = new Set(presetIds);
+  for (const o of outputs) {
+    if (o.enabled && !set.has(o.presetId)) {
+      return `output ${o.type} trỏ rendition "${o.presetId}" chưa tick chọn ở danh sách preset`;
+    }
+  }
+  return null;
+}
+
 //-- Migration default cho DB cũ (docs/16 §12) -----------------------------------
 
 /**
@@ -189,8 +213,13 @@ export function normalizeChannelTranscode(t: ChannelTranscode | undefined): Chan
   };
 }
 
-//-- Secrets (passphrase SRT resolve lúc spawn, KHÔNG persist) --------------------
-// Format env VTC_SRT_PASSPHRASES: "vtvgo:mat-khau-dai-16+,kenh2:mat-khau-khac".
+/** Delay spawn ffmpeg sau tsp (docs/16 §2.2). Env trống/chữ/số âm → default 1000. */
+export function parseTcStartDelayMs(env: string | undefined): number {
+  const v = Number(env ?? '');
+  return Number.isFinite(v) && v > 0 ? Math.floor(v) : 1000;
+}
+
+//-- Secrets (passphrase SRT resolve lúc spawn, KHÔNG persist) --------------------// Format env VTC_SRT_PASSPHRASES: "vtvgo:mat-khau-dai-16+,kenh2:mat-khau-khac".
 
 /** Parse "ref:value,ref2:value2" thành map (bỏ entry rỗng, value giữ nguyên). */
 export function parseSecretsEnv(s: string): Record<string, string> {
@@ -205,8 +234,90 @@ export function parseSecretsEnv(s: string): Record<string, string> {
   return out;
 }
 
-//-- Puller RTMP→UDP (docs/16 §5, T3-wiring) --------------------------------------
-// TSDuck không đọc RTMP: 1 ffmpeg remux `-c copy` (nhẹ CPU, không encode lại)
+//-- Capture agent SDI/HDMI→UDP (Encode — docs/16 §18) ------------------------------
+// Card capture ra baseband raw: agent encode mezzanine (preset + engine) rồi phát
+// UDP localhost cho tsp ingest. GIỮ NGUYÊN interlace (không yadif/fps ở đây —
+// deinterlace là việc của transcode renditions phía dưới).
+
+const captureSchema = z.object({
+  device: z.string().min(1, 'thiếu device (tên card ffmpeg thấy)').max(256),
+  cardIndex: z.number().int().min(0).max(15).optional(),
+  connection: z.string().min(1).max(16).optional(),
+  formatCode: z.string().min(1).max(16).optional(),
+  udpPort: z.number().int().min(CAPTURE_UDP_PORT_MIN).max(CAPTURE_UDP_PORT_MAX),
+  presetId: z.string().min(1).max(64).optional(),
+  engine: z.enum(['cpu', 'nvenc', 'qsv', 'vaapi']).optional(),
+});
+
+/** Validate 1 capture (ném TranscodeError). */
+export function parseCapture(u: unknown): SourceCapture {
+  const r = captureSchema.safeParse(u);
+  if (!r.success) throw new TranscodeError(`capture sai: ${r.error.issues.map((i) => `${i.path.join('.')}: ${i.message}`).join('; ')}`);
+  return { ...r.data };
+}
+
+/** Chuẩn hóa capture đọc từ DB (thiếu/sai → undefined). Điền default presetId/engine. */
+export function normalizeSourceCapture(p: SourceCapture | undefined): SourceCapture | undefined {
+  if (p === undefined) return undefined;
+  try {
+    const v = parseCapture(p);
+    return { ...v, presetId: v.presetId ?? 'p1080', engine: v.engine ?? 'cpu' };
+  } catch {
+    return undefined;
+  }
+}
+
+export interface CaptureJob {
+  device: string;
+  cardIndex?: number | undefined;
+  connection?: string | undefined;
+  formatCode?: string | undefined;
+  udpPort: number;
+  /** Preset mezzanine đã resolve (mặc định p1080). */
+  preset: TranscodePreset;
+  engine?: TranscodeEngine | undefined;
+  /** Đè input decklink bằng input khác (lab/test). Production luôn là card. */
+  inputUrl?: string | undefined;
+}
+
+/**
+ * Sinh argv capture agent: `-f decklink -i device` → encode mezzanine →
+ * `-f mpegts udp://127.0.0.1:port`. Giữ `-progress pipe:1` để giám sát.
+ * Cú pháp chọn card thứ N (`device@N`) verify lại trên phần cứng thật.
+ */
+export function buildCaptureArgs(job: CaptureJob): string[] {
+  const c = parseCapture({
+    device: job.device,
+    cardIndex: job.cardIndex,
+    connection: job.connection,
+    formatCode: job.formatCode,
+    udpPort: job.udpPort,
+  });
+  const preset = job.preset;
+  if (preset.video === null) throw new TranscodeError('capture cần preset video (không dùng Audio-Only cho mezzanine)');
+  const engine = resolveEngine({ engine: job.engine });
+  const v = preset.video;
+  const a = preset.audio;
+  const args: string[] = ['-hide_banner', '-nostdin', '-loglevel', 'warning', '-progress', 'pipe:1'];
+  if (job.inputUrl !== undefined && job.inputUrl !== '') {
+    args.push('-i', job.inputUrl);
+  } else {
+    args.push('-f', 'decklink');
+    if (c.formatCode !== undefined) args.push('-format_code', c.formatCode);
+    if (c.connection !== undefined) args.push('-video_input', c.connection);
+    const idx = c.cardIndex ?? 0;
+    args.push('-i', idx > 0 ? `${c.device}@${idx}` : c.device);
+  }
+  args.push(
+    '-map', '0:v:0', '-map', '0:a?',
+    ...videoEncoderArgs(engine, v.bitrateKbps, v.gop, v.fps, v.preset),
+    '-c:a', 'aac', '-b:a', `${a.bitrateKbps}k`, '-ar', String(a.sampleRate), '-ac', String(a.channels),
+    '-f', 'mpegts', `udp://127.0.0.1:${c.udpPort}?pkt_size=1316`,
+  );
+  return args;
+}
+
+//-- Puller RTMP→UDP (docs/16 §5, T3-wiring) --------------------------------------// TSDuck không đọc RTMP: 1 ffmpeg remux `-c copy` (nhẹ CPU, không encode lại)
 // từ MediaMTX ra UDP localhost, tsp ingest UDP đó như nguồn thường.
 
 const pullerSchema = z.object({
@@ -352,7 +463,7 @@ export function assertEngineAvailable(engine: TranscodeEngine, encodersText: str
   }
 }
 
-export function resolveEngine(job: FfmpegJob): TranscodeEngine {
+export function resolveEngine(job: { engine?: TranscodeEngine | undefined }): TranscodeEngine {
   const e = job.engine ?? 'cpu';
   if (e !== 'cpu' && e !== 'nvenc' && e !== 'qsv' && e !== 'vaapi') {
     throw new TranscodeError(`engine "${job.engine}" không hợp lệ (cpu|nvenc|qsv|vaapi)`);

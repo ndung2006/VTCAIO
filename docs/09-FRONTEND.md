@@ -7,8 +7,10 @@
 - `app/layout.tsx` — khung xám `bg-slate-50`; `app/page.tsx` — dashboard giám sát.
 - `app/channel/[id]/page.tsx` — **Live view PRD §4.7**: tiêu đề IN HOA + Stream Link Box + nút Copy (tooltip "Đã sao chép") + player 16:9.
 - `app/login/page.tsx` — form độc lập (PRD §4.8), lỗi chung chung.
-- `app/sources/page.tsx` — CRUD nguồn + kênh nhúng (validate trùng tên instant ở client, chặn cứng ở API).
-- `app/channels/page.tsx` — tồn kho mọi kênh (tìm kiếm, bật/tắt Live, HLS age/stale, cảnh báo trùng tên, nút Link kéo luồng pull), link trong Sidebar.
+- `app/sources/page.tsx` — CRUD nguồn + kênh nhúng (validate trùng tên instant ở client, chặn cứng ở API) + form puller RTMP / capture SDI + badge trạng thái puller/capture.
+- `app/channels/page.tsx` — tồn kho mọi kênh (tìm kiếm, bật/tắt Live, HLS age/stale, cảnh báo trùng tên, nút Link kéo luồng pull, cột TĐ trạng thái ffmpeg), link trong Sidebar.
+- `app/transcode/page.tsx` — CRUD preset encode (docs/16).
+- `components/TranscodePanel.tsx` — tab Truyền dẫn trong trang kênh: toggle/engine/loopback, preset multi-select, bảng outputs (SRT/RTMP/UDP), tick mã hóa, nút Test, status poll 5s.
 - `app/epg/page.tsx` — quản lý EPG (map kênh, đồng bộ tay, xem lịch ngày, Xuất EPG).
 - `app/channel/[id]/page.tsx` — split-view: player Live + panel EPG (now-playing, Xem timeshift, Trích xuất prefill, Xuất EPG).
 - `app/exports/page.tsx` — tối thiểu Phase 4 (form export validate Out>In, ≤6h ở client; API async Phase 5) + prefill từ EPG (`?channel=&in=&out=`).

@@ -1,7 +1,7 @@
 // transcode.test.ts — validate form FE (mirror backend, không gọi mạng).
 import { describe, it } from 'node:test';
 import assert from 'node:assert/strict';
-import { validateChannelTranscode, validateOutput, validatePuller } from './transcode.js';
+import { validateCapture, validateChannelTranscode, validateOutput, validatePuller } from './transcode.js';
 
 const listen = (port: number): Parameters<typeof validateOutput>[0] => ({
   type: 'srt-listen',
@@ -63,6 +63,13 @@ describe('validateChannelTranscode', () => {
   it('khối đúng qua hết', () => {
     assert.equal(validateChannelTranscode(good), null);
   });
+
+  it('output trỏ preset chưa tick thì báo', () => {
+    assert.match(
+      validateChannelTranscode({ ...good, outputs: [{ type: 'srt-listen', presetId: 'p1080', enabled: true, port: 9001 }] }) ?? '',
+      /chưa tick chọn/,
+    );
+  });
   it('thiếu preset / thiếu output / trùng port đều báo', () => {
     assert.match(validateChannelTranscode({ ...good, presetIds: [] }) ?? '', /preset/);
     assert.match(validateChannelTranscode({ ...good, outputs: [] }) ?? '', /output/);
@@ -71,5 +78,14 @@ describe('validateChannelTranscode', () => {
       /trùng/,
     );
     assert.match(validateChannelTranscode({ ...good, loopbackPort: 7000 }) ?? '', /loopbackPort/);
+  });
+});
+
+describe('validateCapture', () => {
+  it('đúng qua; thiếu device / sai port đều báo', () => {
+    assert.equal(validateCapture(undefined), null);
+    assert.equal(validateCapture({ device: 'UltraStudio Mini Recorder', udpPort: 6201 }), null);
+    assert.match(validateCapture({ device: '', udpPort: 6201 }) ?? '', /device/);
+    assert.match(validateCapture({ device: 'X', udpPort: 6101 }) ?? '', /udpPort/);
   });
 });

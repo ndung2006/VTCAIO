@@ -18,8 +18,8 @@ import {
 } from '@/lib/transcode';
 
 const OUTPUT_TYPES: { v: TranscodeOutputType; label: string }[] = [
-  { v: 'srt-listen', label: 'SRT mở cổng (ngoài kéo ta)' },
-  { v: 'srt-caller', label: 'SRT bắn đi (ta đẩy sang họ)' },
+  { v: 'srt-listen', label: 'SRT Listener — mở cổng, ngoài kéo ta (mặc định VTCAIO)' },
+  { v: 'srt-caller', label: 'SRT Caller — ta đẩy sang họ (chỉ khi đối tác yêu cầu)' },
   { v: 'rtmp-push', label: 'RTMP đẩy đi' },
   { v: 'udp-mcast', label: 'UDP multicast (kiểm tra LAN)' },
 ];
@@ -162,7 +162,7 @@ export function TranscodePanel(props: {
         <span className={`text-sm ${status !== null ? (status.stale ? 'text-amber-600' : status.waiting ? 'text-sky-600' : 'text-green-600') : 'text-slate-400'}`}>
           {status !== null
             ? status.waiting
-              ? '◌ ffmpeg chờ caller SRT đầu tiên (chưa có frame)'
+              ? '◌ chờ frame đầu (thường là chờ caller SRT, hoặc input kẹt)'
               : `● ffmpeg chạy${status.stale ? ' (STALE — fps đứng)' : ''}`
             : '○ ffmpeg chưa chạy'}
         </span>

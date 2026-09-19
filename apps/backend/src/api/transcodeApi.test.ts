@@ -23,7 +23,7 @@ before(() => {
   chmodSync(fakeTsp, 0o755);
   writeFileSync(
     fakeFfmpeg,
-    '#!/bin/sh\ncase "$*" in *-encoders*) echo " Encoders:"; echo " V..... libx264 libx264 H.264 / AVC"; exit 0;; esac\nexec sleep 60\n',
+    '#!/bin/sh\ncase "$*" in *-encoders*) echo " Encoders:"; echo " V..... libx264 libx264 H.264"; exit 0;; esac\nif [ "$VTC_FAKE_PROGRESS_ONCE" = "1" ]; then printf "fps= 25.00\\nbitrate= 2048.0kbits/s\\nprogress=continue\\n"; fi\nexec sleep 60\n',
     'utf8',
   );
   chmodSync(fakeFfmpeg, 0o755);
@@ -70,6 +70,8 @@ describe('Transcode API', { concurrency: false }, () => {
       srtBin: fakeSrt,
       tcStartDelayMs: 50,
       tcRestartDelayMs: 100,
+      tcProgressMs: 400,
+      tcWatchdogMs: 300,
       jwtSecret: 'test-secret-tc',
       adminPass: 'test-admin-123',
       persist: false,
@@ -398,6 +400,26 @@ describe('Transcode API', { concurrency: false }, () => {
     await req('/api/sources/TC2', { method: 'DELETE' });
   });
 
+  it('backup/restore gồm presets: xóa rồi phục hồi lại được', async () => {    // config-restore đòi stop hết source RUNNING
+    await req('/api/sources/TC1/stop', { method: 'POST' });
+    const px = { id: 'px-dr', name: 'DR', video: null, audio: { codec: 'aac', bitrateKbps: 64, sampleRate: 48000, channels: 2 } };
+    let r = await req('/api/presets', json(px));
+    assert.equal(r.status, 201);
+    const bak = (await (await req('/api/admin/config-backup')).json()) as { sources: unknown[]; presets: { id: string }[] };
+    assert.ok(bak.presets.some((p) => p.id === 'px-dr'), 'backup phải gồm preset custom');
+    r = await req('/api/presets/px-dr', { method: 'DELETE' });
+    assert.equal(r.status, 200);
+    r = await req('/api/admin/config-restore', json({ sources: bak.sources, presets: bak.presets }));
+    assert.equal(r.status, 200);
+    assert.equal(((await r.json()) as { presets: number }).presets, bak.presets.length);
+    const list = (await (await req('/api/presets')).json()) as { id: string }[];
+    assert.ok(list.some((p) => p.id === 'px-dr'), 'restore phải dựng lại preset');
+    // Dọn + kiểm tra backup cũ (không có presets) vẫn restore được sources
+    await req('/api/presets/px-dr', { method: 'DELETE' });
+    r = await req('/api/admin/config-restore', json({ sources: bak.sources }));
+    assert.equal(r.status, 200);
+  });
+
   it('trùng loopbackPort / srt-listen / multicast toàn hệ → 400', async () => {
     // TC1/tcv1 đang giữ loopback 6001 + srt 9003 (từ test hot-update).
     const mkSrc = (id: string, ch: unknown): unknown => ({
@@ -439,5 +461,181 @@ describe('Transcode API', { concurrency: false }, () => {
     assert.equal(clash.status, 400);
     await req('/api/sources/TC3', { method: 'DELETE' });
     await req('/api/sources/TC4', { method: 'DELETE' });
+  });
+
+  it('trùng cổng puller toàn hệ → 400', async () => {
+    const mkPull = (id: string, port: number): unknown => ({
+      id,
+      input: `ip 127.0.0.1:${port}`,
+      recordAll: false,
+      channels: [{ name: `ch-${id.toLowerCase()}`, serviceId: 40, isLive: true }],
+      puller: { rtmpUrl: 'rtmp://127.0.0.1:1935/live', streamKey: 'k', udpPort: port },
+    });
+    let r = await req('/api/sources', json(mkPull('TC5', 6101)));
+    assert.equal(r.status, 201);
+    r = await req('/api/sources', json(mkPull('TC6', 6101)));
+    assert.equal(r.status, 400);
+    assert.match(((await r.json()) as { error: string }).error, /cổng puller 6101 bị trùng/);
+    await req('/api/sources/TC5', { method: 'DELETE' });
+  });
+
+  it('config-restore validate transcode: preset lạ / trùng cổng → 400', async () => {
+    const badPreset = {
+      id: 'TCB',
+      input: 'file /tmp/vtc-demo/input.ts --repeat',
+      recordAll: true,
+      channels: [
+        { name: 'tcb', serviceId: 41, isLive: true, transcode: { enabled: true, loopbackPort: 6009, presetIds: ['khong-co'], outputs: [] } },
+      ],
+    };
+    let r = await req('/api/admin/config-restore', json({ sources: [badPreset] }));
+    assert.equal(r.status, 400);
+    assert.match(((await r.json()) as { error: string }).error, /không tồn tại/);
+    const dupLoop = {
+      id: 'TCB',
+      input: 'file /tmp/vtc-demo/input.ts --repeat',
+      recordAll: true,
+      channels: [
+        { name: 'tcb', serviceId: 41, isLive: true, transcode: { enabled: true, loopbackPort: 6001, presetIds: ['p720'], outputs: [] } },
+        { name: 'tcc', serviceId: 42, isLive: true, transcode: { enabled: true, loopbackPort: 6001, presetIds: ['p720'], outputs: [] } },
+      ],
+    };
+    r = await req('/api/admin/config-restore', json({ sources: [dupLoop] }));
+    assert.equal(r.status, 400);
+    assert.match(((await r.json()) as { error: string }).error, /loopbackPort 6001 bị trùng/);
+  });
+
+  it('sửa retention giữ nguyên transcode, không restart tsp lẫn ffmpeg', async () => {
+    await req('/api/sources/TC1/start', { method: 'POST' });
+    await sleep(600);
+    const before = (await (await req('/api/sources/TC1')).json()) as {
+      pid: number;
+      channels: { name: string; serviceId: number; isLive: boolean; transcode?: unknown }[];
+    };
+    const ff0 = (await (await req('/api/transcode/status')).json()) as { pid: number }[];
+    assert.equal(ff0.length, 1);
+    // Giả lập form /sources: gửi lại channels Y HỆT + đổi retention
+    const r = await req('/api/sources/TC1', putJson({ retentionDays: 31, channels: before.channels }));
+    assert.equal(r.status, 200);
+    const after = (await (await req('/api/sources/TC1')).json()) as {
+      pid: number;
+      retentionDays: number;
+      channels: { name: string; transcode?: { enabled: boolean } }[];
+    };
+    assert.equal(after.retentionDays, 31);
+    assert.equal(after.pid, before.pid); // tsp không restart
+    assert.equal(after.channels.find((c) => c.name === 'tcv1')?.transcode?.enabled, true); // transcode còn nguyên
+    const ff1 = (await (await req('/api/transcode/status')).json()) as { pid: number }[];
+    assert.equal(ff1.length, 1);
+    assert.equal(ff1[0]?.pid, ff0[0]?.pid); // ffmpeg không restart
+    await req('/api/sources/TC1/stop', { method: 'POST' });
+  });
+
+  it('start rồi stop ngay trước delay spawn → ffmpeg không mọc lén sau stop', async () => {
+    // tcStartDelayMs=50ms trong suite: stop ngay sau start phải hủy hẹn spawn.
+    // Hẹn rò rỉ là ffmpeg xuất hiện sau khi đã stop (mồ côi, không ai quản).
+    await req('/api/sources/TC1/start', { method: 'POST' });
+    await req('/api/sources/TC1/stop', { method: 'POST' });
+    await sleep(800);
+    const s = (await (await req('/api/transcode/status')).json()) as unknown[];
+    assert.equal(s.length, 0);
+  });
+
+  it('stale (có progress rồi im) → watchdog restart; chưa từng progress thì tha', async () => {
+    // Watchdog suite: progressTimeout 400ms, quét mỗi 300ms.
+    await req('/api/sources/TC1/start', { method: 'POST' });
+    await sleep(500);
+    // Fake mặc định im thin thít → chưa từng progress → KHÔNG stale → watchdog tha
+    let s = (await (await req('/api/transcode/status')).json()) as { pid: number; stale: boolean }[];
+    assert.equal(s.length, 1);
+    const pidQuiet = s[0]?.pid;
+    await sleep(1200);
+    s = (await (await req('/api/transcode/status')).json()) as { pid: number; stale: boolean }[];
+    assert.equal(s.length, 1);
+    assert.equal(s[0]?.pid, pidQuiet); // không restart oan tiến trình đang chờ
+    // Start lại với 1 dòng progress rồi im → stale → watchdog restart
+    await req('/api/sources/TC1/channels/tcv1/transcode-stop', { method: 'POST' });
+    process.env['VTC_FAKE_PROGRESS_ONCE'] = '1';
+    try {
+      await req('/api/sources/TC1/channels/tcv1/transcode-start', { method: 'POST' });
+    } finally {
+      delete process.env['VTC_FAKE_PROGRESS_ONCE'];
+    }
+    const s0 = (await (await req('/api/transcode/status')).json()) as { pid: number }[];
+    const deadline = Date.now() + 5000;
+    let restarted = false;
+    while (Date.now() < deadline) {
+      await sleep(200);
+      const cur = (await (await req('/api/transcode/status')).json()) as { pid: number }[];
+      if (cur.length === 1 && cur[0]?.pid !== s0[0]?.pid) {
+        restarted = true;
+        break;
+      }
+    }
+    assert.equal(restarted, true); // watchdog đã restart tiến trình stale
+    await req('/api/sources/TC1/stop', { method: 'POST' });
+  });
+
+  it('SDI guard: sai input/không encoded → 400 ngay', async () => {
+    const base = {
+      id: 'SDBAD',
+      inputKind: 'sdi',
+      liveCatchupFrom: 'encoded',
+      input: 'ip 127.0.0.1:6201',
+      recordAll: true,
+      channels: [{ name: 'sdbad', serviceId: 51, isLive: true }],
+    };
+    let r = await req('/api/sources', json({ ...base, input: 'ip 239.1.1.1:5000' }));
+    assert.equal(r.status, 400);
+    r = await req('/api/sources', json({ ...base, liveCatchupFrom: 'ingest' }));
+    assert.equal(r.status, 400);
+  });
+
+  it('capture agent: tạo SDI + start → cap chạy; hot-update giữ pid tsp; crash restart', async () => {
+    const body = {
+      id: 'SDI1',
+      inputKind: 'sdi',
+      liveCatchupFrom: 'encoded',
+      input: 'ip 127.0.0.1:6201',
+      recordAll: true,
+      channels: [{ name: 'sdi1', serviceId: 52, isLive: true }],
+      capture: { device: 'Fake Card 0', udpPort: 6201 },
+    };
+    let r = await req('/api/sources', json(body));
+    assert.equal(r.status, 201);
+    r = await req('/api/sources/SDI1/start', { method: 'POST' });
+    assert.equal(r.status, 200);
+    await sleep(300);
+    let st = (await (await req('/api/transcode/status')).json()) as { key: string; pid: number }[];
+    const cap0 = st.find((x) => x.key === 'cap/SDI1');
+    assert.ok(cap0 !== undefined, 'capture agent phải chạy sau start');
+    const src = (await (await req('/api/sources/SDI1')).json()) as { pid: number };
+    // Hot-update capture (đổi device) khi RUNNING → agent restart, tsp giữ nguyên
+    r = await req('/api/sources/SDI1', putJson({ capture: { device: 'Fake Card 1', udpPort: 6201 } }));
+    assert.equal(r.status, 200);
+    const src2 = (await (await req('/api/sources/SDI1')).json()) as { pid: number };
+    assert.equal(src2.pid, src.pid);
+    st = (await (await req('/api/transcode/status')).json()) as { key: string; pid: number }[];
+    const cap1 = st.find((x) => x.key === 'cap/SDI1');
+    assert.ok(cap1 !== undefined && cap1.pid !== cap0.pid, 'agent đã hot-restart');
+    // Capture sai → 400
+    r = await req('/api/sources/SDI1', putJson({ capture: { device: '', udpPort: 6201 } }));
+    assert.equal(r.status, 400);
+    // Crash → auto-restart
+    process.kill(cap1.pid, 'SIGKILL');
+    const deadline = Date.now() + 4000;
+    let ok = false;
+    while (Date.now() < deadline) {
+      await sleep(200);
+      const cur = (await (await req('/api/transcode/status')).json()) as { key: string; pid: number }[];
+      const p = cur.find((x) => x.key === 'cap/SDI1');
+      if (p !== undefined && p.pid !== cap1.pid) {
+        ok = true;
+        break;
+      }
+    }
+    assert.equal(ok, true);
+    await req('/api/sources/SDI1/stop', { method: 'POST' });
+    await req('/api/sources/SDI1', { method: 'DELETE' });
   });
 });

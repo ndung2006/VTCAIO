@@ -18,7 +18,7 @@
 
 import { mkdirSync, writeFileSync } from 'node:fs';
 import { dirname, join } from 'node:path';
-import type { GeneratedConf, SourceConfig } from './types.js';
+import type { GeneratedConf, SourceConfig, SourceInputKind } from './types.js';
 import { loopbackForkLine } from './TranscodeConfigGenerator.js';
 
 /** Thư mục mặc định chứa .conf (Prod: /opt/vtc/conf/sources). */
@@ -31,6 +31,13 @@ export const LIVE_BASE = process.env['VTC_LIVE_DIR'] ?? '/media/ramdisk/live';
 export const CAPTURE_BASE = process.env['VTC_CAPTURE_DIR'] ?? '/mnt/Data/catchup/captures';
 
 export class ConfigError extends Error {}
+
+/** Chuẩn hóa loại đầu vào (DB cũ thiếu → ip; lạ → ném để lộ cấu hình hỏng). */
+export function normalizeInputKind(k: SourceConfig['inputKind']): SourceInputKind {
+  if (k === undefined) return 'ip';
+  if (k === 'ip' || k === 'sdi' || k === 'hdmi') return k;
+  throw new ConfigError(`inputKind "${k}" không hợp lệ (ip|sdi|hdmi)`);
+}
 
 /** Kiểm tra 1 channel, ném ConfigError nếu sai. */
 function assertChannel(c: SourceConfig['channels'][number], index: number): void {
@@ -94,6 +101,39 @@ export function splitInputArgs(input: string): string[] {
 export function generateConfText(source: SourceConfig): GeneratedConf {
   if (!/^[A-Za-z0-9_-]+$/.test(source.id)) {
     throw new ConfigError(`source.id "${source.id}" chỉ cho [A-Za-z0-9_-]`);
+  }
+  // Encode (SDI/HDMI baseband) vs Transcode (IP) — chốt kiến trúc docs/16 §18:
+  // model đã có từ bây giờ, ingest baseband triển khai phase sau (cần card
+  // capture + driver). Chặn rõ ở đây để không sinh conf nửa vời.
+  const kind = normalizeInputKind(source.inputKind);
+  // Điểm trích Live/GHI (docs/16 §0, §18): ip khóa ingest ở Phase 1
+  // (toggle "sau transcode" chưa mở); Encode bắt buộc encoded.
+  const from = source.liveCatchupFrom ?? 'ingest';
+  if (from !== 'ingest' && from !== 'encoded') {
+    throw new ConfigError(`source ${source.id}: liveCatchupFrom "${from}" không hợp lệ (ingest|encoded)`);
+  }
+  if (kind === 'ip' && from === 'encoded') {
+    throw new ConfigError(
+      `source ${source.id}: liveCatchupFrom=encoded (sau transcode) khóa ở Phase 1 — GHI + Live IP đi đường gốc (xem docs/16 §0)`,
+    );
+  }
+  if (kind === 'sdi' || kind === 'hdmi') {
+    // Encode: baseband qua capture agent → UDP localhost, tsp ingest UDP đó.
+    // Ép 2 điều kiện để khỏi cấu hình nửa vời: sau-encode + input là UDP agent.
+    if (from !== 'encoded') {
+      throw new ConfigError(
+        `source ${source.id}: nguồn ${kind.toUpperCase()} bắt buộc liveCatchupFrom=encoded (baseband raw không ra HLS/GHI trực tiếp được)`,
+      );
+    }
+    const parts = splitInputArgs(source.input);
+    const m = parts.length >= 2 && parts[0] === 'ip' ? /^127\.0\.0\.1:(62\d\d)$/.exec(parts[1] ?? '') : null;
+    const port = m !== null ? Number.parseInt(m[1] ?? '', 10) : NaN;
+    if (!Number.isInteger(port) || port < 6200 || port > 6299) {
+      throw new ConfigError(
+        `source ${source.id}: input nguồn ${kind.toUpperCase()} phải là UDP của capture agent (VD "ip 127.0.0.1:6201", cổng 6200..6299) — ` +
+          `card capture do agent đọc, tsp chỉ ingest UDP (xem docs/16 §18)`,
+      );
+    }
   }
   if (source.input.trim() === '') {
     throw new ConfigError('source.input rỗng');

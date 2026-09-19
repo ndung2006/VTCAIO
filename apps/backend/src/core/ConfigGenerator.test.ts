@@ -2,7 +2,7 @@
 // Chạy: npm test  (tsx --test src/core/*.test.ts)
 import { describe, it } from 'node:test';
 import assert from 'node:assert/strict';
-import { ConfigError, generateConfText, splitInputArgs } from './ConfigGenerator.js';
+import { ConfigError, generateConfText, normalizeInputKind, splitInputArgs } from './ConfigGenerator.js';
 
 describe('ConfigGenerator', () => {
   it('sinh MPTS 2 kênh live + record_all (đúng PRD §3.1)', () => {
@@ -123,6 +123,53 @@ describe('ConfigGenerator', () => {
           channels: [{ name: 'kenh xau', serviceId: 1, isLive: true }],
         }),
       ConfigError,
+    );
+  });
+
+  it('normalizeInputKind: thiếu → ip; lạ → ném', () => {
+    assert.equal(normalizeInputKind(undefined), 'ip');
+    assert.equal(normalizeInputKind('ip'), 'ip');
+    assert.equal(normalizeInputKind('sdi'), 'sdi');
+    assert.throws(() => normalizeInputKind('dvb' as never), ConfigError);
+  });
+
+  it('inputKind sdi/hdmi: encoded + UDP agent 62xx thì sinh conf (mở Encode)', () => {
+    const sdi = {
+      id: 'SDI1',
+      inputKind: 'sdi' as const,
+      liveCatchupFrom: 'encoded' as const,
+      input: 'ip 127.0.0.1:6201',
+      recordAll: true,
+      channels: [{ name: 'sdi1', serviceId: 807, isLive: true }],
+    };
+    const gen = generateConfText(sdi);
+    assert.ok(gen.content.includes('tsp -P zap 807'), 'kênh SDI zap/conf như nguồn thường');
+    // Thiếu encoded → ném (baseband không ra trực tiếp được)
+    assert.throws(() => generateConfText({ ...sdi, liveCatchupFrom: 'ingest' }), /bắt buộc liveCatchupFrom=encoded/);
+    // Input không phải UDP agent → ném
+    assert.throws(() => generateConfText({ ...sdi, input: 'ip 239.1.1.1:5000' }), /UDP của capture agent/);
+    assert.throws(() => generateConfText({ ...sdi, input: 'ip 127.0.0.1:6101' }), /UDP của capture agent/);
+    assert.throws(() => generateConfText({ ...sdi, inputKind: 'hdmi', input: 'ip 239.1.1.1:5000' }), /UDP của capture agent/);
+    // ip tường minh vẫn chạy như cũ
+    const genIp = generateConfText({ ...sdi, inputKind: 'ip', liveCatchupFrom: 'ingest', input: 'ip 239.1.1.1:5000' });
+    assert.ok(genIp.content.includes('-I'));
+  });
+
+  it('liveCatchupFrom: ip khóa ingest; giá trị lạ thì ném', () => {
+    const base = {
+      id: 'IP1',
+      input: 'ip 239.1.1.1:5000',
+      recordAll: true,
+      channels: [{ name: 'c1', serviceId: 1, isLive: true }],
+    };
+    // thiếu = ingest (DB cũ) vẫn chạy
+    assert.ok(generateConfText(base).content.includes('-I'));
+    assert.ok(generateConfText({ ...base, liveCatchupFrom: 'ingest' }).content.includes('-I'));
+    // ip + encoded khóa Phase 1
+    assert.throws(() => generateConfText({ ...base, liveCatchupFrom: 'encoded' }), /khóa ở Phase 1/);
+    assert.throws(
+      () => generateConfText({ ...base, liveCatchupFrom: 'sau' } as never),
+      /không hợp lệ/,
     );
   });
 });

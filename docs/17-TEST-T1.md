@@ -99,7 +99,7 @@ Lỗi gặp (paste message lỗi UI/API/log nếu có):
 | Thấy gì | Nghĩa là gì | Làm gì |
 |---|---|---|
 | `waiting=true` mãi | Chưa ai kéo SRT (ffmpeg chờ caller) | Kéo ffplay như bước 3, fps sẽ lên |
-| `stale=true` | Đã chạy rồi đứng fps | Restart ffmpeg (nút Stop/Start ffmpeg), báo lại |
+| `stale=true` | Đã chạy rồi đứng fps | Hệ tự restart sau ~45s + Telegram; lặp lại thì restart tay (Stop/Start ffmpeg), báo lại |
 | Lưu báo "stop source trước" | Đổi enabled/loopback khi RUNNING | Đúng thiết kế — stop source, sửa, start lại |
 | Start ffmpeg báo thiếu `h264_nvenc` | Engine để nhầm nvenc | Chuyển engine về `cpu` (máy này không có GPU Turing+) |
 | VLC đen hình nhưng fps > 0 | Thường do firewall/UDP + IGMP | Kiểm tra ufw + cùng VLAN, thử ffplay thay VLC |

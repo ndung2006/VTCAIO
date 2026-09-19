@@ -24,14 +24,20 @@ import { TranscodeManager } from '../core/TranscodeManager.js';
 import {
   assertEngineAvailable,
   assertLoopbackPort,
+  buildCaptureArgs,
   buildFfmpegArgs,
   buildPullerArgs,
+  checkOutputPresetRefs,
   defaultPresets,
   normalizeChannelTranscode,
+  normalizeSourceCapture,
   normalizeSourcePuller,
+  parseCapture,
   parseOutput,
+  parsePreset,
   parsePuller,
   parseSecretsEnv,
+  parseTcStartDelayMs,
   TranscodeError,
 } from '../core/TranscodeConfigGenerator.js';
 import { Store, type SourceRecord } from './store.js';
@@ -98,6 +104,10 @@ export interface ApiOptions {
   srtBin?: string;
   /** Ms chờ auto-restart ffmpeg sau crash (mặc định 2000, docs/16 §9.2). */
   tcRestartDelayMs?: number;
+  /** Ms im lặng progress thì coi ffmpeg stale (mặc định 15000, docs/16 §9.3). */
+  tcProgressMs?: number;
+  /** Nhịp watchdog quét stale (mặc định 30000; test truyền nhỏ). Tắt bằng VTC_TC_WATCHDOG=0. */
+  tcWatchdogMs?: number;
   /** Ms chờ tsp ổn định trước khi spawn ffmpeg (mặc định 1000, docs/16 §2.2). */
   tcStartDelayMs?: number;
   /** File JSON persist presets (mặc định <confDir>/presets.db.json). */
@@ -472,10 +482,11 @@ export function createApi(opts: ApiOptions = {}): {
   const srtBin = opts.srtBin ?? process.env['VTC_SRT_BIN'] ?? 'srt-live-transmit';
   const srtSecrets: Record<string, string> =
     opts.srtSecrets ?? parseSecretsEnv(process.env['VTC_SRT_PASSPHRASES'] ?? '');
-  const tm = new TranscodeManager({ ffmpegBin });
+  const tm = new TranscodeManager({ ffmpegBin, progressTimeoutMs: opts.tcProgressMs ?? 15000 });
   const tcKey = (sourceId: string, channel: string): string => `${sourceId}/${channel}`;
   const tcRestartDelayMs = opts.tcRestartDelayMs ?? 2000; // docs/16 §9.2
-  const tcStartDelayMs = opts.tcStartDelayMs ?? Number(process.env['VTC_TC_START_DELAY_MS'] ?? 1000); // docs/16 §2.2
+  // Env trống/chữ/số âm → về default 1000 (Number('')=0 sẽ giết delay chống sốc UDP).
+  const tcStartDelayMs = opts.tcStartDelayMs ?? parseTcStartDelayMs(process.env['VTC_TC_START_DELAY_MS']);
   const noRestartTc = new Set<string>(); // key ffmpeg đang stop tay
   const pendingTcRestarts = new Map<string, NodeJS.Timeout>();
   const pendingTcStarts = new Map<string, NodeJS.Timeout[]>();
@@ -615,6 +626,34 @@ export function createApi(opts: ApiOptions = {}): {
         pendingTcRestarts.set(key, t);
         return;
       }
+      // Nhánh capture agent SDI/HDMI (key `cap/<sourceId>`) — cùng chính sách
+      // restart/crash-guard như puller.
+      if (key.startsWith('cap/')) {
+        const sid = key.slice('cap/'.length);
+        const rec = store.getSource(sid);
+        if (rec === undefined || rec.status !== 'RUNNING' || normalizeSourceCapture(rec.capture) === undefined) return;
+        const crashes = tm.recentCrashes(key, 5 * 60 * 1000);
+        const why = signal !== null ? `signal ${signal}` : `mã ${String(code)}`;
+        if (crashes > 3) {
+          void notifier.alert(`tc:${key}`, `Capture agent source ${sid} crash ${crashes} lần/5 phút (${why}) — DỪNG HẲN, chờ operator kiểm tra.`);
+          return;
+        }
+        void notifier.alert(`tc:${key}`, `Capture agent source ${sid} dừng đột ngột (${why}) — restart sau ${tcRestartDelayMs}ms (lần ${crashes}/3).`);
+        const t = setTimeout(() => {
+          pendingTcRestarts.delete(key);
+          const r2 = store.getSource(sid);
+          if (r2 === undefined || r2.status !== 'RUNNING' || normalizeSourceCapture(r2.capture) === undefined) return;
+          if (tm.isRunning(key)) return;
+          try {
+            startSourceCapture(r2);
+          } catch {
+            // Lỗi resolve: alert ở lần crash tiếp theo, operator xem log.
+          }
+        }, tcRestartDelayMs);
+        t.unref?.();
+        pendingTcRestarts.set(key, t);
+        return;
+      }
       const slash = key.indexOf('/');
       if (slash < 0) return;
       const sid = key.slice(0, slash);
@@ -713,6 +752,12 @@ export function createApi(opts: ApiOptions = {}): {
     return n === undefined ? '' : JSON.stringify(n);
   }
 
+  /** Key so sánh cấu hình capture — đổi là hot-restart agent (không động tsp). */
+  function captureCfgKey(p: SourceRecord['capture']): string {
+    const n = normalizeSourceCapture(p);
+    return n === undefined ? '' : JSON.stringify(n);
+  }
+
   /**
    * Fail-fast lúc tạo/sửa source: preset/output transcode + puller phải hợp lệ
    * NGAY (đừng để tới lúc start mới nổ). Trả message lỗi hoặc null = đạt.
@@ -726,6 +771,8 @@ export function createApi(opts: ApiOptions = {}): {
       }
       try {
         for (const o of t.outputs) parseOutput(o);
+        const refErr = checkOutputPresetRefs(t.presetIds, t.outputs);
+        if (refErr !== null) throw new TranscodeError(refErr);
       } catch (e) {
         return `kênh ${c.name}: ${e instanceof Error ? e.message : 'output sai'}`;
       }
@@ -735,6 +782,15 @@ export function createApi(opts: ApiOptions = {}): {
         parsePuller(s.puller);
       } catch (e) {
         return `puller: ${e instanceof Error ? e.message : 'puller sai'}`;
+      }
+    }
+    if (s.capture !== undefined) {
+      try {
+        const c = parseCapture(s.capture);
+        const presetId = c.presetId ?? 'p1080';
+        if (presetStore.getPreset(presetId) === undefined) return `capture trỏ preset "${presetId}" không tồn tại`;
+      } catch (e) {
+        return `capture: ${e instanceof Error ? e.message : 'capture sai'}`;
       }
     }
     return null;
@@ -749,7 +805,23 @@ export function createApi(opts: ApiOptions = {}): {
     const loop = new Map<number, string>();
     const srt = new Map<number, string>();
     const mcast = new Map<string, string>();
+    const pullerPorts = new Map<number, string>();
+    const capturePorts = new Map<number, string>();
     for (const s of all) {
+      // Cổng puller UDP (6100–6199): 2 puller chung cổng thì tsp ăn trộn luồng.
+      const p = normalizeSourcePuller(s.puller);
+      if (p !== undefined) {
+        const dup = pullerPorts.get(p.udpPort);
+        if (dup !== undefined) return `cổng puller ${p.udpPort} bị trùng (${dup} và ${s.id}) — 1 source 1 cổng`;
+        pullerPorts.set(p.udpPort, s.id);
+      }
+      // Cổng capture agent UDP (6200–6299): cùng lý do.
+      const c = normalizeSourceCapture(s.capture);
+      if (c !== undefined) {
+        const dup = capturePorts.get(c.udpPort);
+        if (dup !== undefined) return `cổng capture agent ${c.udpPort} bị trùng (${dup} và ${s.id}) — 1 source 1 cổng`;
+        capturePorts.set(c.udpPort, s.id);
+      }
       for (const c of s.channels) {
         const t = normalizeChannelTranscode(c.transcode);
         if (t === undefined || !t.enabled) continue;
@@ -790,6 +862,44 @@ export function createApi(opts: ApiOptions = {}): {
   /** Diệt puller (không động tsp). Luôn resolve. */
   async function stopSourcePuller(sourceId: string): Promise<void> {
     const k = pullKey(sourceId);
+    noRestartTc.add(k);
+    try {
+      await tm.stop(k);
+    } finally {
+      noRestartTc.delete(k);
+    }
+    const t = pendingTcRestarts.get(k);
+    if (t !== undefined) {
+      clearTimeout(t);
+      pendingTcRestarts.delete(k);
+    }
+  }
+
+  //-- Capture agent SDI/HDMI (Encode — docs/16 §18): key `cap/<sourceId>` -------
+  const capKey = (sourceId: string): string => `cap/${sourceId}`;
+
+  /** Spawn capture agent cho source (ném lỗi rõ). Gọi TRƯỚC khi start tsp. */
+  function startSourceCapture(rec: SourceRecord): number | null {
+    const c = normalizeSourceCapture(rec.capture);
+    if (c === undefined) return null;
+    const preset = presetStore.getPreset(c.presetId ?? 'p1080');
+    if (preset === undefined) throw new Error(`capture trỏ preset "${c.presetId ?? 'p1080'}" không tồn tại`);
+    checkEngineOrWarn(c.engine ?? 'cpu');
+    const args = buildCaptureArgs({
+      device: c.device,
+      cardIndex: c.cardIndex,
+      connection: c.connection,
+      formatCode: c.formatCode,
+      udpPort: c.udpPort,
+      preset,
+      engine: c.engine,
+    });
+    return tm.start(capKey(rec.id), args);
+  }
+
+  /** Diệt capture agent (không động tsp). Luôn resolve. */
+  async function stopSourceCapture(sourceId: string): Promise<void> {
+    const k = capKey(sourceId);
     noRestartTc.add(k);
     try {
       await tm.stop(k);
@@ -1045,22 +1155,24 @@ export function createApi(opts: ApiOptions = {}): {
       send(res, 200, { result, configured: notifier.configured });
       return;
     }
-    // GET /api/admin/config-backup — tải toàn bộ cấu hình sources (JSON)
+    // GET /api/admin/config-backup — tải toàn bộ cấu hình sources + presets (JSON)
     if (seg[0] === 'api' && seg[1] === 'admin' && m === 'GET' && seg[2] === 'config-backup') {
       if (!isAdminReq(req)) return send(res, 403, { error: FORBIDDEN });
-      send(res, 200, { exportedAt: new Date().toISOString(), sources: store.listSources() });
+      send(res, 200, { exportedAt: new Date().toISOString(), sources: store.listSources(), presets: presetStore.listPresets() });
       return;
     }
-    // POST /api/admin/config-restore {sources: SourceConfig[]} — phục hồi cấu hình
+    // POST /api/admin/config-restore {sources: SourceConfig[], presets?: TranscodePreset[]} — phục hồi cấu hình
     if (seg[0] === 'api' && seg[1] === 'admin' && m === 'POST' && seg[2] === 'config-restore') {
       if (!isAdminReq(req)) return send(res, 403, { error: FORBIDDEN });
-      const b = (await readJson(req)) as { sources?: unknown };
+      const b = (await readJson(req)) as { sources?: unknown; presets?: unknown };
       if (!Array.isArray(b.sources)) return send(res, 400, { error: 'thiếu sources[]' });
       const records: SourceConfig[] = [];
       for (const s of b.sources) {
         try {
           const checked = checkSourceBody(s);
           generateConfText(checked); // validate sinh conf được
+          const tcErr = checkTranscodeRefs(checked); // preset/output/puller hợp lệ
+          if (tcErr !== null) throw new Error(tcErr);
           records.push(checked);
         } catch (e) {
           if (e instanceof ConfigError) return send(res, 400, { error: `bản ghi lỗi: ${e.message}` });
@@ -1068,6 +1180,8 @@ export function createApi(opts: ApiOptions = {}): {
           throw e;
         }
       }
+      const gErr = checkGlobalTranscodePorts(records); // chống trùng cổng toàn hệ
+      if (gErr !== null) return send(res, 400, { error: `bản ghi lỗi: ${gErr}` });
       const dup = duplicateChannelName(records);
       if (dup !== null) return send(res, 400, { error: dup });
       const mapErr = checkPartnerMapping(records);
@@ -1085,9 +1199,23 @@ export function createApi(opts: ApiOptions = {}): {
           // ghi conf lỗi thì Start sẽ báo — vẫn giữ record
         }
       }
+      // Presets đi kèm backup (vắng mặt ở bản backup cũ thì giữ nguyên kho hiện tại).
+      let presetCount: number | undefined;
+      if (b.presets !== undefined) {
+        if (!Array.isArray(b.presets)) return send(res, 400, { error: 'presets phải là mảng' });
+        try {
+          for (const p of b.presets) parsePreset(p);
+        } catch (e) {
+          if (e instanceof TranscodeError) return send(res, 400, { error: `preset lỗi: ${e.message}` });
+          throw e;
+        }
+        presetStore.replaceAll(b.presets);
+        savePresets();
+        presetCount = presetStore.listPresets().length;
+      }
       savePersisted();
-      logger.info(`config-restore: phục hồi ${records.length} sources`);
-      send(res, 200, { ok: true, count: records.length });
+      logger.info(`config-restore: phục hồi ${records.length} sources${presetCount !== undefined ? ` + ${presetCount} presets` : ''}`);
+      send(res, 200, { ok: true, count: records.length, presets: presetCount ?? null });
       return;
     }
 
@@ -1675,6 +1803,8 @@ export function createApi(opts: ApiOptions = {}): {
           const confKey = (s: SourceConfig): string =>
             JSON.stringify({
               input: s.input,
+              inputKind: s.inputKind ?? 'ip',
+              liveCatchupFrom: s.liveCatchupFrom ?? 'ingest',
               recordAll: s.recordAll,
               channels: s.channels.map((c) => [
                 c.name,
@@ -1685,7 +1815,14 @@ export function createApi(opts: ApiOptions = {}): {
               ]),
             });
           if (confKey(merged) === confKey(cur)) {
-            const rec = store.updateMeta(id, { retentionDays: patch.retentionDays, channels: merged.channels });
+            const rec = store.updateMeta(id, {
+              retentionDays: patch.retentionDays,
+              channels: merged.channels,
+              puller: merged.puller,
+              inputKind: merged.inputKind,
+              liveCatchupFrom: merged.liveCatchupFrom,
+              capture: merged.capture,
+            });
             savePersisted();
             // Hot-update puller RTMP (docs/16 §5): input tsp không đổi nên chỉ
             // restart puller, không động tsp.
@@ -1701,6 +1838,22 @@ export function createApi(opts: ApiOptions = {}): {
                 }
               } else {
                 logger.info(`gỡ puller ${id} (không restart tsp)`);
+              }
+            }
+            // Hot-update capture agent SDI (docs/16 §18): input tsp (UDP agent)
+            // không đổi nên chỉ restart agent, không động tsp.
+            if (captureCfgKey(cur.capture) !== captureCfgKey(merged.capture) && rec.status === 'RUNNING') {
+              await stopSourceCapture(id);
+              const after = store.getSource(id);
+              if (after !== undefined && normalizeSourceCapture(after.capture) !== undefined) {
+                try {
+                  startSourceCapture(after);
+                  logger.info(`hot-update capture ${id} (không restart tsp)`);
+                } catch (e) {
+                  logger.warn(`hot-update capture ${id} thất bại: ${e instanceof Error ? e.message : 'lỗi không rõ'}`);
+                }
+              } else {
+                logger.info(`gỡ capture ${id} (không restart tsp)`);
               }
             }
             // Hot-update tầng endpoint transcode (docs/16 §8.2): kênh vẫn enabled
@@ -1738,6 +1891,7 @@ export function createApi(opts: ApiOptions = {}): {
         if (m === 'DELETE') {
           if (!isAdminReq(req)) return send(res, 403, { error: FORBIDDEN });
           clearPending(id); // hủy restart đã hẹn (nếu crash trước đó)
+          await stopSourceCapture(id).catch(() => {}); // diệt agent đi kèm
           await stopSourcePuller(id).catch(() => {}); // diệt puller đi kèm
           await stopSourceTranscodes(id).catch(() => {}); // diệt ffmpeg đi kèm
           try {
@@ -1778,6 +1932,12 @@ export function createApi(opts: ApiOptions = {}): {
         } catch (e) {
           return send(res, 500, { error: `start puller thất bại: ${e instanceof Error ? e.message : 'lỗi không rõ'}` });
         }
+        try {
+          startSourceCapture(r); // capture agent SDI trước tsp (không có thì no-op)
+        } catch (e) {
+          await stopSourcePuller(r.id).catch(() => {});
+          return send(res, 500, { error: `start capture agent thất bại: ${e instanceof Error ? e.message : 'lỗi không rõ'}` });
+        }
         const pid = pm.start(id, gen.filePath ?? `${confDir}/${id}.conf`);
         store.setStatus(id, 'RUNNING', pid);
         savePersisted();
@@ -1791,8 +1951,10 @@ export function createApi(opts: ApiOptions = {}): {
         if (!isAdminReq(req)) return send(res, 403, { error: FORBIDDEN });
         noRestart.add(id); // đánh dấu stop tay để onExit không restart
         clearPending(id);
-        await stopSourcePuller(id); // diệt puller + ffmpeg trước, tsp sau
-        await stopSourceTranscodes(id); // diệt ffmpeg trước, tsp sau (docs/16 §9.1)
+        // Diệt capture agent + puller + ffmpeg trước, tsp sau (docs/16 §9.1)
+        await stopSourceCapture(id);
+        await stopSourcePuller(id);
+        await stopSourceTranscodes(id);
         try {
           await pm.stop(id);
         } finally {
@@ -1895,6 +2057,8 @@ export function createApi(opts: ApiOptions = {}): {
               if (presetStore.getPreset(p) === undefined) throw new TranscodeError(`preset "${p}" không tồn tại`);
             }
             for (const o of t.outputs) parseOutput(o);
+            const refErr = checkOutputPresetRefs(t.presetIds, t.outputs);
+            if (refErr !== null) throw new TranscodeError(refErr);
           }
         } catch (e) {
           if (e instanceof TranscodeError) return send(res, 400, { error: e.message });
@@ -2035,6 +2199,13 @@ export function createApi(opts: ApiOptions = {}): {
                   store.setStatus(sid, 'ERROR');
                   continue;
                 }
+                try {
+                  startSourceCapture(r);
+                } catch {
+                  void stopSourcePuller(sid).catch(() => {});
+                  store.setStatus(sid, 'ERROR');
+                  continue;
+                }
                 const pid = pm.start(sid, gen.filePath ?? `${confDir}/${sid}.conf`);
                 store.setStatus(sid, 'RUNNING', pid);
                 scheduleTcStarts(sid);
@@ -2126,6 +2297,13 @@ export function createApi(opts: ApiOptions = {}): {
                   store.setStatus(t.id, 'ERROR');
                   continue;
                 }
+                try {
+                  startSourceCapture(cur);
+                } catch {
+                  await stopSourcePuller(t.id).catch(() => {});
+                  store.setStatus(t.id, 'ERROR');
+                  continue;
+                }
                 const pid = pm.start(t.id, gen.filePath ?? `${confDir}/${t.id}.conf`);
                 store.setStatus(t.id, 'RUNNING', pid);
                 scheduleTcStarts(t.id);
@@ -2139,6 +2317,59 @@ export function createApi(opts: ApiOptions = {}): {
             watchdogTimer = setInterval(() => void watchdogTick(), 30 * 1000);
             watchdogTimer.unref?.();
           }
+          // Watchdog transcode (docs/16 §9.3): ffmpeg sống nhưng fps đứng quá
+          // progressTimeout (mặc định 15s) → Telegram + restart đúng config hiện
+          // tại. Crash đã có handler riêng; đây lo process đơ (stale).
+          // Tắt hẳn bằng VTC_TC_WATCHDOG=0.
+          const tcProgressMs = opts.tcProgressMs ?? 15000;
+          const tcWatchdogMs = opts.tcWatchdogMs ?? 30000;
+          let tcWatchdogTimer: NodeJS.Timeout | undefined;
+          async function tcWatchdogTick(): Promise<void> {
+            // Restart 1 key stale: alert + stop + start lại đúng config hiện tại.
+            async function restartStale(key: string, label: string, start: () => number | null): Promise<void> {
+              void notifier.alert(`tc-stale:${key}`, `${label} stale (không tiến triển quá ${tcProgressMs}ms) — restart...`);
+              noRestartTc.add(key);
+              try {
+                await tm.stop(key);
+              } finally {
+                noRestartTc.delete(key);
+              }
+              try {
+                start();
+              } catch (e) {
+                logger.warn(`watchdog restart ${key} thất bại: ${e instanceof Error ? e.message : 'lỗi không rõ'}`);
+              }
+            }
+            for (const key of tm.keys()) {
+              if (!tm.isStale(key)) continue;
+              if (key.startsWith('pull/')) {
+                const sid = key.slice('pull/'.length);
+                const rec = store.getSource(sid);
+                if (rec === undefined || rec.status !== 'RUNNING' || normalizeSourcePuller(rec.puller) === undefined) continue;
+                await restartStale(key, `Puller RTMP source ${sid}`, () => startSourcePuller(rec));
+                continue;
+              }
+              if (key.startsWith('cap/')) {
+                const sid = key.slice('cap/'.length);
+                const rec = store.getSource(sid);
+                if (rec === undefined || rec.status !== 'RUNNING' || normalizeSourceCapture(rec.capture) === undefined) continue;
+                await restartStale(key, `Capture agent source ${sid}`, () => startSourceCapture(rec));
+                continue;
+              }
+              const slash = key.indexOf('/');
+              if (slash < 0) continue;
+              const sid = key.slice(0, slash);
+              const chName = key.slice(slash + 1);
+              const rec = store.getSource(sid);
+              const ch = rec?.channels.find((c) => c.name === chName);
+              if (rec === undefined || rec.status !== 'RUNNING' || ch === undefined || ch.transcode?.enabled !== true) continue;
+              await restartStale(key, `Transcode ${chName}`, () => startChannelTranscode(sid, ch));
+            }
+          }
+          if (process.env['VTC_TC_WATCHDOG'] !== '0') {
+            tcWatchdogTimer = setInterval(() => void tcWatchdogTick(), tcWatchdogMs);
+            tcWatchdogTimer.unref?.();
+          }
           server.listen(port, () => {
             const addr = server.address();
             const p = typeof addr === 'object' && addr !== null ? addr.port : port;
@@ -2149,6 +2380,7 @@ export function createApi(opts: ApiOptions = {}): {
                   clearInterval(gcTimer);
                   clearInterval(epgTimer);
                   clearInterval(watchdogTimer);
+                  clearInterval(tcWatchdogTimer);
                    for (const t of pendingRestarts.values()) clearTimeout(t);
                    pendingRestarts.clear();
                    for (const t of pendingTcRestarts.values()) clearTimeout(t);

@@ -27,10 +27,58 @@ export interface ChannelConfig {
   transcode?: ChannelTranscode | undefined;
 }
 
+/** Loại đầu vào của source — chốt kiến trúc Encode vs Transcode (docs/16 §18). */
+export type SourceInputKind =
+  /** IP (multicast/SRT/RTMP/file): transcode luồng nén có sẵn — chạy được ngay. */
+  | 'ip'
+  /** SDI (baseband qua card capture): encode từ raw — phase sau (cần phần cứng). */
+  | 'sdi'
+  /** HDMI (baseband qua card capture/USB): encode từ raw — phase sau. */
+  | 'hdmi';
+
+/**
+ * Điểm trích Live HLS + GHI catchup (docs/16 §0, §18).
+ * - ingest: lấy từ luồng ingest (TRƯỚC transcode) — mặc định + khóa cứng cho IP ở Phase 1.
+ * - encoded: lấy từ luồng ĐÃ encode (SAU encode/transcode) — mặc định bắt buộc cho Encode (SDI/HDMI),
+ *   vì baseband raw không thể ra HLS/GHI trực tiếp. Với capture-agent pattern, TSDuck ingest
+ *   luồng đã encode nên GHI/Live tự nhiên là sau-encode.
+ */
+export type SourceLiveCatchupFrom = 'ingest' | 'encoded';
+
+/**
+ * Thông số capture baseband cho nguồn sdi/hdmi (Encode — docs/16 §18).
+ * Capture agent = 1 ffmpeg riêng: đọc card (`-f decklink`) → encode mezzanine
+ * (preset + engine dưới đây) → UDP localhost dải 6200–6299 cho tsp ingest.
+ */
+export interface SourceCapture {
+  /** Tên thiết bị ffmpeg thấy (VD UltraStudio Mini Recorder, DeckLink Mini Recorder 4K). */
+  device: string;
+  /** Index card khi nhiều card cùng máy (mặc định 0 — ffmpeg decklink tự đánh số). */
+  cardIndex?: number | undefined;
+  /** Cổng vào ffmpeg (`-video_input`): sdi | hdmi | ... (mặc định sdi). */
+  connection?: string | undefined;
+  /**
+   * Mã format ffmpeg decklink (`-format_code`, VD Hi50 = 1080i50, Hp25 = 1080p25).
+   * Trống = card tự nhận (khuyên khóa cố định ở Prod).
+   */
+  formatCode?: string | undefined;
+  /** Cổng UDP localhost agent phát ra = cổng tsp nghe (dải 6200–6299). */
+  udpPort: number;
+  /** Preset mezzanine để encode (mặc định p1080). */
+  presetId?: string | undefined;
+  /** Engine encode agent (mặc định cpu). */
+  engine?: TranscodeEngine | undefined;
+}
+
 /** 1 nguồn tín hiệu (VD TS8 = 1 IP multicast chứa N kênh). */
 export interface SourceConfig {
   /** ID nguồn, dùng làm tên file conf + thư mục catchup (VD DEMO). */
   id: string;
+  /**
+   * Loại đầu vào (mặc định ip khi bỏ trống — tương thích DB cũ).
+   * sdi/hdmi: model đã có, ConfigGenerator báo "phase sau" rõ ràng.
+   */
+  inputKind?: SourceInputKind | undefined;
   /** Chuỗi sau `-I`, VD "ip 239.69.69.10:1234" hay "file /tmp/a.ts --repeat". */
   input: string;
   /** Các kênh thuộc nguồn này. */
@@ -47,8 +95,17 @@ export interface SourceConfig {
    * source này ingest UDP đó như nguồn thường (`input: "ip 127.0.0.1:61xx"`).
    * undefined = nguồn trực tiếp (multicast/file), không puller.
    * Đổi puller là hot-update (chỉ restart puller, không động tsp).
+   * Chỉ dùng với inputKind ip (sdi/hdmi có đường capture riêng — docs/16 §18).
    */
   puller?: SourcePuller | undefined;
+  /** Thông số capture cho sdi/hdmi (phase sau — docs/16 §18). */
+  capture?: SourceCapture | undefined;
+  /**
+   * Điểm trích Live HLS + GHI (thiếu = ingest, tương thích DB cũ).
+   * - ip: bắt buộc ingest ở Phase 1 (khóa "sau transcode" — xem docs/16 §0).
+   * - sdi/hdmi: bắt buộc encoded (baseband raw không ra HLS/GHI trực tiếp được).
+   */
+  liveCatchupFrom?: SourceLiveCatchupFrom | undefined;
 }
 
 /**

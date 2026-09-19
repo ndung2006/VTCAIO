@@ -8,6 +8,7 @@ import Link from 'next/link';
 import { Sidebar } from '@/components/Sidebar';
 import { Header } from '@/components/Header';
 import { api, type Source } from '@/lib/api';
+import { tcApi, type TcStatus } from '@/lib/transcode';
 import { CopyButton } from '@/components/CopyButton';
 import { useMe } from '@/lib/role';
 
@@ -18,6 +19,7 @@ interface Row {
   serviceId: number;
   isLive: boolean;
   published: boolean;
+  tcEnabled: boolean;
   ageSec: number | null;
   stale: boolean;
 }
@@ -25,6 +27,7 @@ interface Row {
 export default function ChannelsPage(): React.JSX.Element {
   const [sources, setSources] = useState<Source[]>([]);
   const [health, setHealth] = useState<Map<string, { ageSec: number | null; stale: boolean }> | null>(null);
+  const [tcStatus, setTcStatus] = useState<TcStatus[]>([]);
   const [q, setQ] = useState('');
   const [msg, setMsg] = useState('');
   const [busy, setBusy] = useState('');
@@ -34,9 +37,14 @@ export default function ChannelsPage(): React.JSX.Element {
 
   const reload = useCallback(async () => {
     try {
-      const [ss, hh] = await Promise.all([api.sources(), api.hlsHealth().catch(() => null)]);
+      const [ss, hh, tc] = await Promise.all([
+        api.sources(),
+        api.hlsHealth().catch(() => null),
+        tcApi.tcStatus().catch(() => [] as TcStatus[]),
+      ]);
       setSources(ss);
       setHealth(hh === null ? null : new Map(hh.map((h) => [h.channel, { ageSec: h.ageSec, stale: h.stale }])));
+      setTcStatus(tc);
     } catch {
       setSources([]);
     }
@@ -58,6 +66,7 @@ export default function ChannelsPage(): React.JSX.Element {
           serviceId: c.serviceId,
           isLive: c.isLive,
           published: c.published === true,
+          tcEnabled: c.transcode?.enabled === true,
           ageSec: health?.get(c.name)?.ageSec ?? null,
           stale: health?.get(c.name)?.stale ?? false,
         })),
@@ -187,6 +196,7 @@ export default function ChannelsPage(): React.JSX.Element {
                       <th title="Tích để đưa lên danh mục Cấp API (/api/public/channels)">Cấp API</th>
                     )}
                     <th>HLS</th>
+                    <th title="Trạng thái ffmpeg transcode (chi tiết ở trang kênh)">TĐ</th>
                     <th></th>
                   </tr>
                 </thead>
@@ -246,6 +256,35 @@ export default function ChannelsPage(): React.JSX.Element {
                             ? (r.ageSec === null ? 'mất playlist' : `${r.ageSec}s`)
                             : '—'}
                         {r.stale ? ' (stale)' : ''}
+                      </td>
+                      <td>
+                        {(() => {
+                          if (!r.tcEnabled) return <span className="text-slate-300">—</span>;
+                          const st = tcStatus.find((x) => x.key === `${r.sourceId}/${r.name}`);
+                          if (st === undefined)
+                            return (
+                              <span className="text-slate-400" title="ffmpeg chưa chạy">
+                                ○
+                              </span>
+                            );
+                          if (st.waiting)
+                            return (
+                              <span className="text-sky-600" title="Chờ frame đầu (thường là chờ caller SRT)">
+                                ◌ chờ
+                              </span>
+                            );
+                          if (st.stale)
+                            return (
+                              <span className="text-amber-600" title="Đã chạy rồi đứng fps">
+                                STALE
+                              </span>
+                            );
+                          return (
+                            <span className="text-green-600" title={`pid ${st.pid ?? '?'} · bitrate ${st.bitrateKbps ?? '?'}k`}>
+                              ●{st.fps !== null ? ` ${st.fps}` : ''}
+                            </span>
+                          );
+                        })()}
                       </td>
                       <td className="space-x-2 pr-3 text-right">
                         {isAdmin && (

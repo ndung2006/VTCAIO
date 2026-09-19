@@ -9,7 +9,7 @@
 ## 0. Tiền đề đã chốt
 
 1. VTCAIO đã có hệ GHI riêng → đường GHI chỉ làm buffer cho Timeshift/Trích xuất.
-2. GHI + Live HLS **mặc định TRƯỚC transcode**. Phase 1 **khóa cứng**, chưa cho chọn "sau transcode" (tránh phụ thuộc vòng tròn, vỡ Timeshift/GC). UI ẩn hoàn toàn toggle này; API từ chối nếu client cố gửi.
+2. GHI + Live HLS **mặc định TRƯỚC transcode** (nguồn IP). Phase 1 **khóa cứng**, chưa cho chọn "sau transcode" (tránh phụ thuộc vòng tròn, vỡ Timeshift/GC). UI ẩn hoàn toàn toggle này; API từ chối nếu client cố gửi. Nguồn Encode (SDI/HDMI) thì ngược lại: **mặc định SAU encode** (baseband raw không ra HLS/GHI trực tiếp được) — xem §18, field `liveCatchupFrom`.
 3. **Timeshift + Trích xuất luôn theo đường GHI** (đọc file `.ts` trên đĩa), không theo Live, không theo transcode.
 4. Cấu hình theo cách nghĩ **Elemental** (Live Event → Preset → Output) nhưng chỉ lấy subset (xem §7).
 5. Test trước bằng **ffmpeg CPU**: 4 renditions video + 1 audio-only, tất cả **25fps, H.264 High + AAC-LC 48kHz stereo, CBR, GOP 2s**.
@@ -128,7 +128,9 @@ Bật/tắt transcode làm đổi file conf của tsp (thêm/bớt dòng fork) �
 
 ---
 
-## 4. SRT — 2 chiều (kênh truyền dẫn chính)
+## 4. SRT — 2 chiều (kênh truyền dẫn chính, **mặc định Listener**)
+
+Quy ước hệ thống: **VTCAIO luôn mở listener** (đối tác caller kéo ta). Caller (ta đẩy sang họ) chỉ dùng khi đối tác bắt buộc phía họ không mở cổng được.
 
 | Chiều | VTCAIO | Đối tác | Cần gì |
 |---|---|---|---|
@@ -152,6 +154,11 @@ Bật/tắt transcode làm đổi file conf của tsp (thêm/bớt dòng fork) �
 ## 5. RTMP — 2 chiều (phụ, SRT là chính)
 
 - **Nhận push:** dựng **MediaMTX** (`mediamtx/mediamtx.yml` + `docker-compose.mediamtx.yml`, RTMP :1935, publish user/pass, image ghim `v1.9.3`) làm RTMP server sidecar, mỗi kênh 1 stream-key. Up độc lập cùng backend CPU/GPU.
+- **Capture agent SDI/HDMI (Encode — ĐÃ CODE + TEST, chờ card thật):** `buildCaptureArgs` đọc card (`-f decklink`, formatCode/videoInput, card thứ N) → encode mezzanine theo preset (mặc định p1080, giữ interlace — không yadif ở agent) → UDP localhost **6200–6299** → source ingest (`inputKind sdi/hdmi`, `liveCatchupFrom: encoded`, input `ip 127.0.0.1:62xx`).
+  - E2E ffmpeg thật: mezzanine 1080p fps=110, UDP nhận 5.6MB giải mã được H.264 + AAC.
+  - Lifecycle mirror puller: key `cap/<id>`, start trước tsp, stop cùng source, crash/stale restart + guard, hot-update đổi capture không động tsp, trùng cổng 62xx chặn 400.
+  - Guard `ConfigGenerator`: sdi/hdmi bắt buộc `encoded` + input đúng UDP agent (chặn multicast trực tiếp — card do agent đọc).
+  - UI trang `/sources`: mở chọn SDI/HDMI + form capture (device, cổng vào, formatCode, cổng UDP, preset).
 - **Đưa vào pipeline (puller, đã code + test):** TSDuck không đọc RTMP → 1 ffmpeg puller/key remux **`-c copy`** (nhẹ CPU, không encode lại) từ MediaMTX ra UDP localhost dải **6100–6199**, source ingest UDP đó như nguồn thường (`input: "ip 127.0.0.1:61xx"` + `puller: {rtmpUrl, streamKey, udpPort}`).
   - Yêu cầu nội dung RTMP là H.264 + AAC (codec lạ thì ingest xong dùng transcode kênh để chuyển).
   - Lifecycle: start source → puller trước, tsp sau; stop/delete → diệt puller cùng ffmpeg rồi mới tới tsp; crash → Telegram + restart 2s + crash-guard chung (key `pull/<sourceId>`, hiện trong `/api/transcode/status`).
@@ -255,6 +262,7 @@ Auto-restart của tsp nằm ở `server.ts` (noRestart Set + pendingRestarts Ma
 - `ProcessManager` hiện tại: `stdio: ['ignore','ignore','pipe']` (vứt stdout).
 - `TranscodeManager` **phải** dùng `stdio: ['ignore','pipe','pipe']`: stdout cho `-progress pipe:1` (fps/bitrate), stderr cho error log. (Phương án dự phòng: `-progress udp://127.0.0.1:XXX` — phức tạp hơn, để sau.)
 - `fps = 0` quá 15s → stale → restart + Telegram. Alert **"ffmpeg transcode down" ưu tiên cao nhất**.
+- Phân biệt 3 trạng thái (endpoint `/api/transcode/status`): `running` (có fps), `stale` (đã có frame rồi đứng — watchdog quét 30s tự restart + Telegram), `waiting` (sống quá 30s chưa có frame nào — thường là chờ caller SRT, KHÔNG tự restart để khỏi giết tiến trình đang chờ đúng).
 - Dashboard: CPU node, fps/bitrate/rendition, SRT RTT/loss/retransmit, số caller đang kéo, badge multicast.
 
 ---
@@ -325,15 +333,58 @@ Auto-restart của tsp nằm ở `server.ts` (noRestart Set + pendingRestarts Ma
 - **T0:** xin VTVgo: chiều nào, mấy kênh, port/streamid/passphrase hoặc RTMP URL+key, IP whitelist 2 chiều.
 - **T1 (test tay, chưa UI):** 1 kênh → ffmpeg 4 renditions + audio-only → 4 SRT listen + 1 UDP-mcast → VLC/ffplay kéo thử 24h, ghi CPU/fps/RTT. Verify cú pháp URL query UDP (§2.2) trên ffmpeg trong image.
   - KẾT QUẢ E2E 18/09/2026 (ffmpeg 8.1, file 720p25 GOP 2s, container 6 CPU): chuỗi đầy đủ file → yadif/fps/scale → libx264 CBR → SRT listen → caller kéo → giải mã được H.264 1280×720 25fps + AAC; `fps=137` ở 720p veryfast; progress `-progress pipe:1` parse được qua TranscodeManager. Phát hiện và sửa 1 bug thật: nhánh filter của preset không có output trỏ tới làm ffmpeg lỗi `Error binding filtergraph` (generator giờ chỉ sinh nhánh cho preset được dùng).
-  - LƯU Ý MÔI TRƯỜNG: UDP (nhất là multicast) trong Docker dev không đáng tin để test (mất gói/SPS-PPS) — E2E dùng file input (`inputUrl` override); UDP loopback verify lại trên máy Prod (rmem 25MB).
+  - LƯU Ý MÔI TRƯỜNG: multicast trong Docker dev không đáng tin để test (capture rỗng) — E2E dùng file input (`inputUrl` override) + unicast 127.0.0.1 (đã nhận 5.6MB OK); UDP loopback/multicast verify lại trên máy Prod (rmem 25MB).
+  - Bài học 18/09/2026: cùng 1 câu lệnh + code, test gold pass rồi fail lại sau nhiều giờ (SRT I/O error → exit 251) trong khi disk/RAM/conntrack đều bình thường — UDP stack của Docker dev xuống cấp theo thời gian. Vì vậy **test trong repo DÙNG fake binary, không đụng UDP/SRT thật** (quyết định đúng, giữ nguyên). Mọi chứng minh SRT bằng binary thật chỉ làm tay ở `/tmp` và chỉ có giá trị tại thời điểm chạy.
 - **T2:** preset DB + API + UI + nút Test + Telegram. Chốt Phương án A/B ở §2.3.
 - **T3:** caller/push sang VTVgo thật + RTMP 2 chiều + firewall/port planning.
   - ĐÃ XONG (infra, không cần VTVgo): MediaMTX sidecar (`mediamtx/mediamtx.yml` + `docker-compose.mediamtx.yml`, RTMP :1935, publish user/pass, image ghim `v1.9.3`) — up độc lập cùng backend CPU/GPU để đối tác test push. Bảng cổng docs/13 §0 + check tay prod-check §7 đã có.
   - CÒN LẠI (cần thông tin VTVgo T0): puller ffmpeg đọc RTMP từ mediamtx vào pipeline (generator hiện báo `rtmp-in triển khai ở T3`), caller/push thật, whitelist IP 2 chiều.
 - **T4:** cứng hóa (rotation passphrase, stats dashboard, tách node transcode, doc liên thông).
 
-### Còn chờ bạn chốt để ra spec code T1
+### Trạng thái chốt với bạn (cập nhật liên tục)
 
-1. Kênh test đầu tiên (tên + SID + nguồn multicast).
-2. Test nội bộ hay đấu VTVgo thật ngay.
-3. Passphrase ngay từ T1 hay để T3.
+1. Kênh test: **DN1, SID 807** (file `.ts` thật đã verify E2E: 1080i + MP2 → 4 renditions + AAC, ~5 core/kênh). Địa chỉ multicast + ingest thật **chờ bạn deploy Prod rồi test theo `docs/17-TEST-T1.md`**, báo lại từng bước.
+2. Phạm vi test: **nội bộ trước** (SRT/multicast-out LAN, chưa đấu VTVgo). Đấu thật + RTMP để sau.
+3. Mã hóa: **test trần**, lên Prod bật/tắt trên UI (tick Mã hóa + ref, secret trong env).
+4. GPU: máy Prod có **GTX 770 (Kepler) → loại**, toàn hệ chạy **CPU** (`engine=cpu` mặc định). Image GPU + compose giữ sẵn cho card Turing+ sau này.
+
+## 18. Encode (SDI/HDMI) vs Transcode (IP) — kiến trúc mở rộng
+
+### Nguyên tắc chốt
+
+Encode khác Transcode **CHỈ ở đầu vào** — mọi thứ phía dưới (GHI, Live HLS,
+Timeshift/Trích xuất, transcode renditions, SRT/RTMP/UDP-out, giám sát,
+restart) **dùng chung y nguyên**:
+
+```text
+Transcode (IP):  multicast/SRT/RTMP/file → TSDuck -I ip/file ─┐
+Encode (SDI):    SDI/HDMI baseband → capture agent ───────────┤
+                                                          ▼
+                                              SPTS nội bộ → fork HLS/GHI/loopback → (như cũ)
+```
+
+- `SourceConfig.inputKind: ip|sdi|hdmi` (thiếu = ip, tương thích DB cũ) + `capture: {device, cardIndex, connection, videoMode}` — model đã có từ bây giờ, UI sources có dropdown (SDI/HDMI disabled "phase sau").
+- `ConfigGenerator` + `gen-conf.sh` hiện **chặn rõ** sdi/hdmi ("phase sau"), không sinh conf nửa vời.
+
+### Phương án ingest baseband (ĐÃ CODE + TEST, chờ card thật)
+
+Dùng **capture agent = 1 ffmpeg riêng** (đúng pattern puller RTMP ở §5),
+KHÔNG build TSDuck custom. `buildCaptureArgs` đọc card (`-f decklink`, formatCode/videoInput, card thứ N `device@N`) → encode mezzanine theo preset DB (mặc định p1080/cpu, giữ interlace) → UDP localhost **6200–6299**:
+
+```text
+ffmpeg -f decklink -i 'UltraStudio Mini Recorder@20' -map 0 -c:v libx264 … -f mpegts udp://127.0.0.1:62xx
+  → source VTCAIO input "ip 127.0.0.1:62xx" (inputKind sdi, capture ghi card/mode)
+```
+
+- Vì sao không `tsp -I decklink`: TSDuck stock (deb chính thức) không kèm plugin decklink (cần Blackmagic SDK lúc build) — tự build TSDuck là mang nợ bảo trì. ffmpeg static đã có `decklink`/`dshow`/`v4l2`.
+- Dải cổng đề xuất cho capture agent: **6200–6299** (nối tiếp loopback 6000–6099, puller 6100–6199).
+- Lifecycle mirror puller: key `cap/<id>`, start trước tsp, stop cùng source, crash/stale restart + guard, hot-update đổi capture không động tsp, trùng cổng 62xx chặn 400. UI trang `/sources` mở chọn SDI/HDMI + form capture.
+- E2E ffmpeg thật: mezzanine 1080p fps=110, UDP nhận 5.6MB giải mã được (cú pháp `device@N` cho card thứ N verify lại trên phần cứng thật).
+- Khác biệt vận hành so với IP: SDI không có CC-error (giám sát bằng `signal_lock`/`fps=0` + stale watchdog đã có); mất tín hiệu cáp = input đứng (không phải packet-loss); mỗi kênh cần 1 input vật lý riêng (không multiplex như MPTS).
+
+### Checklist phần cứng khi tới phase Encode
+
+- Card capture (Blackmagic DeckLink / Magewell) + driver host (`blackmagic-desktop-video` / firmware).
+- Docker thấy device: `docker run --device /dev/blackmagic/*` (compose `devices:`) — card là tài nguyên vật lý, không di chuyển giữa máy được như IP.
+- Chuẩn hình thống nhất đài (khuyến nghị khóa `videoMode`, VD 1080i50) thay vì tự nhận.
+- 1 card/kênh (SDI không mux nhiều chương trình) — tính số card = số kênh Encode.

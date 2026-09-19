@@ -7,12 +7,16 @@ import { Sidebar } from '@/components/Sidebar';
 import { Header } from '@/components/Header';
 import { RequireAdmin } from '@/lib/role';
 import { api, type Source, type SourceInput } from '@/lib/api';
-import { validatePuller, type SourcePuller } from '@/lib/transcode';
+import { tcApi, validateCapture, validatePuller, type ChannelTranscode, type SourceCapture, type SourceInputKind, type SourcePuller, type TcStatus } from '@/lib/transcode';
 
 interface ChannelDraft {
   name: string;
   serviceId: string;
   isLive: boolean;
+  /** Giữ nguyên qua form sửa (form không edit các field này — mất là bay cấu hình). */
+  transcode?: ChannelTranscode;
+  partnerChannelId?: number | null;
+  published?: boolean;
 }
 
 const ID_RE = /^[A-Za-z0-9_-]+$/;
@@ -26,12 +30,19 @@ function statusColor(s: Source['status']): string {
 
 export default function SourcesPage(): React.JSX.Element {
   const [sources, setSources] = useState<Source[]>([]);
+  const [tcStatus, setTcStatus] = useState<TcStatus[]>([]);
   const [msg, setMsg] = useState('');
   const [busy, setBusy] = useState('');
   // Form thêm/sửa
   const [showForm, setShowForm] = useState(false);
   const [editingId, setEditingId] = useState<string | null>(null);
   const [fId, setFId] = useState('');
+  const [fInputKind, setFInputKind] = useState<SourceInputKind>('ip');
+  // Capture baseband (Encode SDI/HDMI — docs/16 §18).
+  const [fCapDevice, setFCapDevice] = useState('');
+  const [fCapUdpPort, setFCapUdpPort] = useState('6201');
+  const [fCapFormat, setFCapFormat] = useState('');
+  const [fCapConnection, setFCapConnection] = useState('sdi');
   const [fInput, setFInput] = useState('ip 239.1.1.1:5000');
   const [fRecordAll, setFRecordAll] = useState(true);
   const [fRetention, setFRetention] = useState('30');
@@ -56,6 +67,11 @@ export default function SourcesPage(): React.JSX.Element {
     } catch {
       setSources([]);
     }
+    try {
+      setTcStatus(await tcApi.tcStatus());
+    } catch {
+      setTcStatus([]);
+    }
   }, []);
 
   useEffect(() => {
@@ -73,6 +89,11 @@ export default function SourcesPage(): React.JSX.Element {
   const openCreate = (): void => {
     setEditingId(null);
     setFId('');
+    setFInputKind('ip');
+    setFCapDevice('');
+    setFCapUdpPort('6201');
+    setFCapFormat('');
+    setFCapConnection('sdi');
     setFInput('ip 239.1.1.1:5000');
     setFRecordAll(true);
     setFRetention('30');
@@ -93,12 +114,24 @@ export default function SourcesPage(): React.JSX.Element {
     }
     setEditingId(s.id);
     setFId(s.id);
+    setFInputKind(s.inputKind ?? 'ip');
+    setFCapDevice(s.capture?.device ?? '');
+    setFCapUdpPort(s.capture !== undefined ? String(s.capture.udpPort) : '6201');
+    setFCapFormat(s.capture?.formatCode ?? '');
+    setFCapConnection(s.capture?.connection ?? 'sdi');
     setFInput(s.input);
     setFRecordAll(s.recordAll);
     setFRetention(s.retentionDays !== undefined ? String(s.retentionDays) : '30');
     setFChannels(
       s.channels.length > 0
-        ? s.channels.map((c) => ({ name: c.name, serviceId: String(c.serviceId), isLive: c.isLive }))
+        ? s.channels.map((c) => ({
+            name: c.name,
+            serviceId: String(c.serviceId),
+            isLive: c.isLive,
+            transcode: c.transcode,
+            partnerChannelId: c.partnerChannelId,
+            published: c.published,
+          }))
         : [{ ...EMPTY_CHANNEL }],
     );
     setFPullerOn(s.puller !== undefined);
@@ -185,7 +218,15 @@ export default function SourcesPage(): React.JSX.Element {
         setMsg(`Kênh ${c.name}: Service ID phải là số nguyên 1..65535 (0 đặt trước cho NIT).`);
         return null;
       }
-      channels.push({ name: c.name.trim(), serviceId: sid, isLive: c.isLive });
+      // Giữ nguyên transcode/mapping/published khi sửa (form không edit các field này).
+      channels.push({
+        name: c.name.trim(),
+        serviceId: sid,
+        isLive: c.isLive,
+        transcode: c.transcode,
+        partnerChannelId: c.partnerChannelId,
+        published: c.published,
+      });
     }
     if (channels.length === 0) {
       setMsg('Cần ít nhất 1 kênh.');
@@ -225,7 +266,21 @@ export default function SourcesPage(): React.JSX.Element {
         return null;
       }
     }
-    const body: SourceInput = { id, input: fInput.trim(), channels, recordAll: fRecordAll };
+    const body: SourceInput = { id, inputKind: fInputKind, input: fInput.trim(), channels, recordAll: fRecordAll };
+    if (fInputKind === 'sdi' || fInputKind === 'hdmi') {
+      const cap: SourceCapture = {
+        device: fCapDevice.trim(),
+        connection: fCapConnection.trim() === '' ? undefined : fCapConnection.trim(),
+        formatCode: fCapFormat.trim() === '' ? undefined : fCapFormat.trim(),
+        udpPort: Number(fCapUdpPort),
+      };
+      const cerr = validateCapture(cap);
+      if (cerr !== null) {
+        setMsg(`Capture ${fInputKind.toUpperCase()}: ${cerr} (input phải là UDP agent 6200..6299).`);
+        return null;
+      }
+      body.capture = cap;
+    }
     if (retention !== undefined) body.retentionDays = retention;
     if (puller !== undefined) body.puller = puller;
     return body;
@@ -379,9 +434,32 @@ export default function SourcesPage(): React.JSX.Element {
                 </div>
               </div>
               <p className="mt-1 font-mono text-sm text-slate-600">-I {s.input}</p>
+              {s.inputKind !== undefined && s.inputKind !== 'ip' && (
+                <p className="font-mono text-sm text-violet-700">
+                  ⏺ Encode {s.inputKind.toUpperCase()}
+                  {s.capture !== undefined ? ` (${s.capture.device} → udp 127.0.0.1:${s.capture.udpPort})` : ''} · Live/GHI sau encode
+                </p>
+              )}
               {s.puller !== undefined && (
                 <p className="font-mono text-sm text-sky-700">
-                  ⤓ puller RTMP {s.puller.rtmpUrl}/{s.puller.streamKey} → udp 127.0.0.1:{s.puller.udpPort}
+                  ⤓ puller RTMP {s.puller.rtmpUrl}/{s.puller.streamKey} → udp 127.0.0.1:{s.puller.udpPort}{' '}
+                  {(() => {
+                    const st = tcStatus.find((x) => x.key === `pull/${s.id}`);
+                    if (st === undefined) return <span className="text-slate-400">○ chưa chạy</span>;
+                    if (st.waiting) return <span className="text-sky-600">◌ chờ input RTMP</span>;
+                    return <span className="text-green-600">● chạy{st.fps !== null ? ` fps ${st.fps}` : ''}</span>;
+                  })()}
+                </p>
+              )}
+              {s.capture !== undefined && (
+                <p className="font-mono text-sm text-violet-700">
+                  ⏺ capture {s.capture.device} → udp 127.0.0.1:{s.capture.udpPort}{' '}
+                  {(() => {
+                    const st = tcStatus.find((x) => x.key === `cap/${s.id}`);
+                    if (st === undefined) return <span className="text-slate-400">○ chưa chạy</span>;
+                    if (st.waiting) return <span className="text-sky-600">◌ chờ tín hiệu card</span>;
+                    return <span className="text-green-600">● chạy{st.fps !== null ? ` fps ${st.fps}` : ''}</span>;
+                  })()}
                 </p>
               )}
               <p className="text-sm">
@@ -426,6 +504,18 @@ export default function SourcesPage(): React.JSX.Element {
                 </label>
               </div>
               <label className="block text-sm">
+                <span className="flex items-center gap-2">
+                  Loại đầu vào
+                  <select
+                    value={fInputKind}
+                    onChange={(e) => setFInputKind(e.target.value as SourceInputKind)}
+                    className="rounded border px-2 py-1 text-sm"
+                  >
+                    <option value="ip">IP — Transcode luồng nén (chạy ngay)</option>
+                    <option value="sdi">SDI — Encode baseband qua card capture</option>
+                    <option value="hdmi">HDMI — Encode baseband qua card capture</option>
+                  </select>
+                </span>
                 Input TSDuck (phần sau -I — VD &quot;ip 239.1.1.1:5000&quot;, không dán link udp:// của VLC)
                 <div className="mt-1 flex gap-2">
                   <input
@@ -440,13 +530,64 @@ export default function SourcesPage(): React.JSX.Element {
                   <button
                     type="button"
                     onClick={() => void doScan()}
-                    disabled={scanning || fInput.trim() === ''}
+                    disabled={scanning || fInput.trim() === '' || fInputKind !== 'ip'}
+                    title={fInputKind !== 'ip' ? 'Quét luồng chỉ dùng cho nguồn IP' : undefined}
                     className="shrink-0 rounded bg-sky-700 px-4 py-2 text-sm text-white disabled:opacity-50"
                   >
                     {scanning ? 'Đang quét…' : 'Quét luồng'}
                   </button>
                 </div>
               </label>
+              {(fInputKind === 'sdi' || fInputKind === 'hdmi') && (
+                <div className="rounded border border-violet-200 bg-violet-50 p-3">
+                  <p className="text-sm font-semibold">
+                    Capture {fInputKind.toUpperCase()} — agent encode mezzanine → UDP localhost
+                  </p>
+                  <div className="mt-2 grid gap-2 md:grid-cols-2">
+                    <label className="text-sm">
+                      Tên card (ffmpeg thấy)
+                      <input
+                        value={fCapDevice}
+                        onChange={(e) => setFCapDevice(e.target.value)}
+                        placeholder="UltraStudio Mini Recorder"
+                        className="mt-1 w-full rounded border px-3 py-2 font-mono"
+                      />
+                    </label>
+                    <label className="text-sm">
+                      Cổng UDP agent→tsp (6200–6299)
+                      <input
+                        value={fCapUdpPort}
+                        onChange={(e) => setFCapUdpPort(e.target.value)}
+                        inputMode="numeric"
+                        placeholder="6201"
+                        className="mt-1 w-full rounded border px-3 py-2 font-mono"
+                      />
+                    </label>
+                    <label className="text-sm">
+                      Cổng vào card (trống = SDI)
+                      <input
+                        value={fCapConnection}
+                        onChange={(e) => setFCapConnection(e.target.value)}
+                        placeholder="sdi"
+                        className="mt-1 w-full rounded border px-3 py-2 font-mono"
+                      />
+                    </label>
+                    <label className="text-sm">
+                      Mã format (trống = tự nhận, VD Hi50 = 1080i50)
+                      <input
+                        value={fCapFormat}
+                        onChange={(e) => setFCapFormat(e.target.value)}
+                        placeholder="Hi50"
+                        className="mt-1 w-full rounded border px-3 py-2 font-mono"
+                      />
+                    </label>
+                  </div>
+                  <p className="mt-2 text-xs text-slate-500">
+                    Input ở trên phải là UDP của agent (VD “ip 127.0.0.1:6201”). Mezzanine mặc định
+                    p1080/cpu (đổi preset/engine qua API). Live + GHI lấy sau encode (mặc định).
+                  </p>
+                </div>
+              )}
               {(scanMsg !== '' || scanProgs.length > 0) && (
                 <div className="rounded border border-sky-200 bg-sky-50 p-3 text-sm">
                   {scanMsg !== '' && <p className="mb-2 text-slate-700">{scanMsg}</p>}

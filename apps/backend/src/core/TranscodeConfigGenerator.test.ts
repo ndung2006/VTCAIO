@@ -3,17 +3,22 @@ import { describe, it } from 'node:test';
 import assert from 'node:assert/strict';
 import {
   assertEngineAvailable,
+  buildCaptureArgs,
   buildFfmpegArgs,
   buildPullerArgs,
+  checkOutputPresetRefs,
   defaultPresets,
   isMulticastIPv4,
   isValidOutputGroup,
   loopbackForkLine,
   normalizeChannelTranscode,
+  normalizeSourceCapture,
   normalizeSourcePuller,
+  parseCapture,
   parseOutput,
   parsePreset,
   parsePuller,
+  parseTcStartDelayMs,
   requiredEncoder,
   transcodeInputUrl,
   TranscodeError,
@@ -178,6 +183,15 @@ describe('buildFfmpegArgs', () => {
     );
   });
 
+  it('output trỏ preset không tick chọn thì checkOutputPresetRefs báo', () => {
+    const ok = [{ type: 'srt-listen', presetId: 'p720', enabled: true, port: 9001 }] as Parameters<typeof checkOutputPresetRefs>[1];
+    assert.equal(checkOutputPresetRefs(['p720'], ok), null);
+    const bad = [{ type: 'srt-listen', presetId: 'p1080', enabled: true, port: 9001 }] as Parameters<typeof checkOutputPresetRefs>[1];
+    assert.match(checkOutputPresetRefs(['p720'], bad) ?? '', /chưa tick chọn/);
+    const off = [{ type: 'srt-listen', presetId: 'p1080', enabled: false, port: 9001 }] as Parameters<typeof checkOutputPresetRefs>[1];
+    assert.equal(checkOutputPresetRefs(['p720'], off), null); // output tắt thì bỏ qua
+  });
+
   it('lỗi fail-fast: preset lạ, port trùng, group 239.x, rtmp-in, thiếu output', () => {
     const ps = presetsById(['p720']);
     const listen = (port: number): unknown => ({ type: 'srt-listen', presetId: 'p720', enabled: true, port });
@@ -253,7 +267,7 @@ describe('engine CPU/GPU', () => {
     assert.throws(() => buildFfmpegArgs({ ...base, engine: 'cuda' as unknown as 'cpu' }), /không hợp lệ/);
   });
 
-  it('normalize: DB cũ thiếu engine → cpu; engine lạ → cpu', () => {
+  it('normalize: DB cũ thiếu engine → cpu; engine lạ → cpu', async () => {
     assert.equal(normalizeChannelTranscode({ enabled: true, loopbackPort: 6001, presetIds: [], outputs: [] })?.engine, 'cpu');
     assert.equal(normalizeChannelTranscode({ enabled: true, loopbackPort: 6001, presetIds: [], outputs: [], engine: 'nvenc' })?.engine, 'nvenc');
     assert.equal(
@@ -346,5 +360,73 @@ describe('normalizeChannelTranscode', () => {
   it('DB cũ thiếu presetIds/outputs/engine thì điền default', () => {
     const n = normalizeChannelTranscode({ enabled: true, loopbackPort: 6001 } as unknown as Parameters<typeof normalizeChannelTranscode>[0]);
     assert.deepEqual(n, { enabled: true, loopbackPort: 6001, presetIds: [], outputs: [], engine: 'cpu' });
+  });
+});
+
+describe('parseTcStartDelayMs', () => {
+  it('số dương giữ nguyên; rỗng/chữ/số âm → 1000 (giữ delay chống sốc UDP)', () => {
+    assert.equal(parseTcStartDelayMs('1500'), 1500);
+    assert.equal(parseTcStartDelayMs(''), 1000);
+    assert.equal(parseTcStartDelayMs(undefined), 1000);
+    assert.equal(parseTcStartDelayMs('abc'), 1000);
+    assert.equal(parseTcStartDelayMs('-5'), 1000);
+    assert.equal(parseTcStartDelayMs('0'), 1000);
+  });
+});
+
+describe('capture agent SDI→UDP', () => {
+  it('argv decklink → encode mezzanine → UDP, giữ interlace (không yadif)', () => {
+    const presets = defaultPresets();
+    const p1080 = presets.find((p) => p.id === 'p1080');
+    if (p1080 === undefined) throw new Error('thiếu preset seed p1080');
+    const args = buildCaptureArgs({
+      device: 'UltraStudio Mini Recorder',
+      udpPort: 6201,
+      preset: p1080,
+    });
+    const s = args.join(' ');
+    assert.ok(s.includes('-f decklink'), 'input decklink');
+    assert.ok(s.includes("-i UltraStudio Mini Recorder"), 'đúng device');
+    assert.ok(s.includes('libx264') && s.includes('-b:v 4000k'), 'encode mezzanine theo preset');
+    assert.ok(!s.includes('yadif'), 'KHÔNG deinterlace ở agent (giữ interlace cho dưới)');
+    assert.ok(s.includes('udp://127.0.0.1:6201?pkt_size=1316'), 'output UDP localhost');
+    assert.ok(s.includes('0:a?'), 'audio optional (card có thể không có tiếng embedded)');
+  });
+
+  it('cardIndex/formatCode/connection ra argv; audio-only preset bị từ chối', () => {
+    const presets = defaultPresets();
+    const p1080 = presets.find((p) => p.id === 'p1080');
+    const paudio = presets.find((p) => p.id === 'paudio');
+    if (p1080 === undefined || paudio === undefined) throw new Error('thiếu preset seed');
+    const args = buildCaptureArgs({
+      device: 'DeckLink Mini Recorder 4K',
+      cardIndex: 1,
+      connection: 'sdi',
+      formatCode: 'Hi50',
+      udpPort: 6202,
+      preset: p1080,
+    });
+    const s = args.join(' ');
+    assert.ok(s.includes('-format_code Hi50') && s.includes('-video_input sdi'), 'format + cổng vào');
+    assert.ok(s.includes('DeckLink Mini Recorder 4K@1'), 'card thứ N');
+    assert.throws(
+      () => buildCaptureArgs({ device: 'X', udpPort: 6201, preset: paudio }),
+      /cần preset video/,
+    );
+  });
+
+  it('validate capture: thiếu device, sai port, inputUrl override lab', () => {
+    const presets = defaultPresets();
+    const p720 = presets.find((p) => p.id === 'p720');
+    if (p720 === undefined) throw new Error('thiếu preset seed p720');
+    assert.throws(() => parseCapture({ device: '', udpPort: 6201 }), TranscodeError);
+    assert.throws(() => parseCapture({ device: 'X', udpPort: 6101 }), TranscodeError);
+    const args = buildCaptureArgs({ device: 'X', udpPort: 6201, preset: p720, inputUrl: '/tmp/in.ts' });
+    assert.equal(args[args.indexOf('-i') + 1], '/tmp/in.ts');
+    assert.equal(normalizeSourceCapture(undefined), undefined);
+    const norm = normalizeSourceCapture({ device: 'X', udpPort: 6201 });
+    assert.ok(norm !== undefined);
+    assert.equal(norm.presetId, 'p1080');
+    assert.equal(norm.engine, 'cpu');
   });
 });

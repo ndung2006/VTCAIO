@@ -4,7 +4,7 @@
 //=============================================================================
 
 import type { SourceConfig } from '../core/types.js';
-import { normalizeChannelTranscode, normalizeSourcePuller } from '../core/TranscodeConfigGenerator.js';
+import { normalizeChannelTranscode, normalizeSourceCapture, normalizeSourcePuller } from '../core/TranscodeConfigGenerator.js';
 import type { UserRecord } from './auth.js';
 
 /** Bản ghi Source kèm rev + trạng thái (DB thật sẽ thêm pid, createdAt...). */
@@ -61,14 +61,17 @@ export class Store {
    */
   updateMeta(
     id: string,
-    patch: { retentionDays?: number | undefined; channels?: SourceConfig['channels']; puller?: SourceConfig['puller'] },
+    patch: { retentionDays?: number | undefined; channels?: SourceConfig['channels']; puller?: SourceConfig['puller']; inputKind?: SourceConfig['inputKind']; liveCatchupFrom?: SourceConfig['liveCatchupFrom']; capture?: SourceConfig['capture'] },
   ): SourceRecord {
     const cur = this.sources.get(id);
     if (cur === undefined) throw new Error(`Source ${id} không tồn tại`);
-    const clean: { retentionDays?: number | undefined; channels?: SourceConfig['channels']; puller?: SourceConfig['puller'] } = {};
+    const clean: { retentionDays?: number | undefined; channels?: SourceConfig['channels']; puller?: SourceConfig['puller']; inputKind?: SourceConfig['inputKind']; liveCatchupFrom?: SourceConfig['liveCatchupFrom']; capture?: SourceConfig['capture'] } = {};
     if (patch.retentionDays !== undefined) clean.retentionDays = patch.retentionDays;
     if (patch.channels !== undefined) clean.channels = patch.channels;
     if (patch.puller !== undefined) clean.puller = normalizeSourcePuller(patch.puller);
+    if (patch.inputKind !== undefined) clean.inputKind = patch.inputKind;
+    if (patch.liveCatchupFrom !== undefined) clean.liveCatchupFrom = patch.liveCatchupFrom;
+    if (patch.capture !== undefined) clean.capture = normalizeSourceCapture(patch.capture);
     const next: SourceRecord = { ...cur, ...clean, id: cur.id };
     this.sources.set(id, next);
     return next;
@@ -120,6 +123,14 @@ export class Store {
       confRev: typeof rec.confRev === 'number' && rec.confRev >= 1 ? Math.floor(rec.confRev) : 1,
       status: rec.status === 'RUNNING' || rec.status === 'STOPPED' || rec.status === 'ERROR' ? rec.status : 'STOPPED',
     };
+    // inputKind lạ → bỏ về ip (DB cũ thiếu thì undefined = ip).
+    if (norm.inputKind !== undefined && norm.inputKind !== 'ip' && norm.inputKind !== 'sdi' && norm.inputKind !== 'hdmi') {
+      delete norm.inputKind;
+    }
+    // liveCatchupFrom lạ → bỏ (thiếu = ingest).
+    if (norm.liveCatchupFrom !== undefined && norm.liveCatchupFrom !== 'ingest' && norm.liveCatchupFrom !== 'encoded') {
+      delete norm.liveCatchupFrom;
+    }
     // Migration DB cũ (docs/16 §12): channel thiếu field transcode mới thì
     // điền default (không transcode), không được crash lúc boot.
     if (Array.isArray(norm.channels)) {
