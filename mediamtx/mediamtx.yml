@@ -5,8 +5,14 @@
 # hiện tại sidecar đứng sẵn để đối tác test push + lấy tín hiệu.
 logLevel: info
 
-# Bật đúng 1 protocol (không khai address = tắt):
+# CHỈ bật RTMP (nhận push). Tắt tường minh các protocol khác — để trống là
+# default BẬT (log thực tế đã thấy RTSP/HLS/WebRTC/SRT cùng lên).
+rtsp: no
+rtmp: yes
 rtmpAddress: :1935
+hls: no
+webrtc: no
+srt: no
 
 # Publish phải có user/pass (đối tác push sai key là 403, log thấy ngay).
 # Pass THẬT đặt qua env MTX_AUTHINTERNALUSERS_0_PASS (xem
