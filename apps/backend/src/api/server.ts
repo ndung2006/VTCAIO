@@ -29,6 +29,7 @@ import {
   buildPullerArgs,
   checkOutputPresetRefs,
   defaultPresets,
+  envNonEmpty,
   normalizeChannelTranscode,
   normalizeSourceCapture,
   normalizeSourcePuller,
@@ -332,11 +333,11 @@ export function createApi(opts: ApiOptions = {}): {
       return [];
     }
   }
-  const captureDir = opts.captureDir ?? process.env['VTC_CAPTURE_DIR'] ?? 'storage/captures';
-  const exportsDir = opts.exportsDir ?? process.env['VTC_EXPORTS_DIR'] ?? 'storage/exports';
-  const liveDir = opts.liveDir ?? process.env['VTC_LIVE_DIR'] ?? 'storage/ramdisk';
+  const captureDir = opts.captureDir ?? envNonEmpty('VTC_CAPTURE_DIR', 'storage/captures');
+  const exportsDir = opts.exportsDir ?? envNonEmpty('VTC_EXPORTS_DIR', 'storage/exports');
+  const liveDir = opts.liveDir ?? envNonEmpty('VTC_LIVE_DIR', 'storage/ramdisk');
+  const tspBin = opts.tspBin ?? envNonEmpty('VTC_TSP_BIN', 'tsp');
   const notifier = new TelegramNotifier(); // đọc VTC_TELEGRAM_* từ env, thiếu thì log
-  const tspBin = opts.tspBin ?? process.env['VTC_TSP_BIN'] ?? 'tsp';
   //-- EPG đối tác (lịch đã duyệt): store JSON + client X-API-Key + worker 10p --
   const epgStoreFile = `${dirname(storeFile)}/epg.db.json`;
   const epgStore = new EpgStore(persistEnabled ? epgStoreFile : undefined);
@@ -478,8 +479,8 @@ export function createApi(opts: ApiOptions = {}): {
     presetStore.seedDefaults(defaultPresets());
   }
 
-  const ffmpegBin = opts.ffmpegBin ?? process.env['VTC_FFMPEG_BIN'] ?? 'ffmpeg';
-  const srtBin = opts.srtBin ?? process.env['VTC_SRT_BIN'] ?? 'srt-live-transmit';
+  const ffmpegBin = opts.ffmpegBin ?? envNonEmpty('VTC_FFMPEG_BIN', 'ffmpeg');
+  const srtBin = opts.srtBin ?? envNonEmpty('VTC_SRT_BIN', 'srt-live-transmit');
   const srtSecrets: Record<string, string> =
     opts.srtSecrets ?? parseSecretsEnv(process.env['VTC_SRT_PASSPHRASES'] ?? '');
   const tm = new TranscodeManager({ ffmpegBin, progressTimeoutMs: opts.tcProgressMs ?? 15000 });

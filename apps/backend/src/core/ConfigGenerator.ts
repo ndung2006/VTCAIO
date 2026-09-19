@@ -19,16 +19,16 @@
 import { mkdirSync, writeFileSync } from 'node:fs';
 import { dirname, join } from 'node:path';
 import type { GeneratedConf, SourceConfig, SourceInputKind } from './types.js';
-import { loopbackForkLine } from './TranscodeConfigGenerator.js';
+import { loopbackForkLine, envNonEmpty } from './TranscodeConfigGenerator.js';
 
 /** Thư mục mặc định chứa .conf (Prod: /opt/vtc/conf/sources). */
-export const DEFAULT_CONF_DIR = process.env['VTC_CONF_DIR'] ?? 'storage/conf';
+export const DEFAULT_CONF_DIR = envNonEmpty('VTC_CONF_DIR', 'storage/conf');
 
 /** RAMDisk HLS live (Prod: /media/ramdisk/live). */
-export const LIVE_BASE = process.env['VTC_LIVE_DIR'] ?? '/media/ramdisk/live';
+export const LIVE_BASE = envNonEmpty('VTC_LIVE_DIR', '/media/ramdisk/live');
 
 /** HDD catchup (Prod: /mnt/Data/catchup/captures). */
-export const CAPTURE_BASE = process.env['VTC_CAPTURE_DIR'] ?? '/mnt/Data/catchup/captures';
+export const CAPTURE_BASE = envNonEmpty('VTC_CAPTURE_DIR', '/mnt/Data/catchup/captures');
 
 export class ConfigError extends Error {}
 

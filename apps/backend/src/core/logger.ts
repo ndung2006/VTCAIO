@@ -7,6 +7,7 @@
 //=============================================================================
 import { appendFileSync, existsSync, mkdirSync, renameSync, statSync } from 'node:fs';
 import { join } from 'node:path';
+import { envNonEmpty } from './TranscodeConfigGenerator.js';
 
 let logDirOverride: string | undefined;
 
@@ -15,7 +16,7 @@ export function setLogDir(dir: string | undefined): void {
 }
 
 export function getLogDir(): string {
-  return logDirOverride ?? process.env['VTC_LOG_DIR'] ?? 'storage/logs';
+  return logDirOverride ?? envNonEmpty('VTC_LOG_DIR', 'storage/logs');
 }
 
 function maxBytes(): number {

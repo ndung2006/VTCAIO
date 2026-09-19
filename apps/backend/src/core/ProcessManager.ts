@@ -10,6 +10,7 @@
 import { spawn, type ChildProcess } from 'node:child_process';
 import { EventEmitter } from 'node:events';
 import type { CcErrorEvent, SourceStatus } from './types.js';
+import { envNonEmpty } from './TranscodeConfigGenerator.js';
 
 /** Thông tin 1 process đang quản lý. */
 interface Managed {
@@ -49,7 +50,7 @@ export class ProcessManager extends EventEmitter {
 
   constructor(opts: ProcessManagerOptions = {}) {
     super();
-    this.tspBin = opts.tspBin ?? process.env['VTC_TSP_BIN'] ?? 'tsp';
+    this.tspBin = opts.tspBin ?? envNonEmpty('VTC_TSP_BIN', 'tsp');
     this.restartDelayMs = opts.restartDelayMs ?? 5000;
     this.killTimeoutMs = opts.killTimeoutMs ?? 5000;
   }

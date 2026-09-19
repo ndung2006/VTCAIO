@@ -8,6 +8,7 @@ import {
   buildPullerArgs,
   checkOutputPresetRefs,
   defaultPresets,
+  envNonEmpty,
   isMulticastIPv4,
   isValidOutputGroup,
   loopbackForkLine,
@@ -375,6 +376,17 @@ describe('normalizeChannelTranscode', () => {
 });
 
 describe('parseTcStartDelayMs', () => {
+  it('envNonEmpty: trống/whitespace → fallback (vá bẫy spawn rỗng)', () => {
+    assert.equal(envNonEmpty('VTC_TEST_VTCIO_UNSET_XYZ', 'fb'), 'fb');
+    process.env['VTC_TEST_VTCIO_UNSET_XYZ'] = '';
+    assert.equal(envNonEmpty('VTC_TEST_VTCIO_UNSET_XYZ', 'fb'), 'fb');
+    process.env['VTC_TEST_VTCIO_UNSET_XYZ'] = '   ';
+    assert.equal(envNonEmpty('VTC_TEST_VTCIO_UNSET_XYZ', 'fb'), 'fb');
+    process.env['VTC_TEST_VTCIO_UNSET_XYZ'] = '/usr/bin/x';
+    assert.equal(envNonEmpty('VTC_TEST_VTCIO_UNSET_XYZ', 'fb'), '/usr/bin/x');
+    delete process.env['VTC_TEST_VTCIO_UNSET_XYZ'];
+  });
+
   it('số dương giữ nguyên; rỗng/chữ/số âm → 1000 (giữ delay chống sốc UDP)', () => {
     assert.equal(parseTcStartDelayMs('1500'), 1500);
     assert.equal(parseTcStartDelayMs(''), 1000);

@@ -114,4 +114,24 @@ describe('TranscodeManager', () => {
     await m.stop('khong-co'); // không ném
     await m.stop('a');
   });
+
+  it("VTC_FFMPEG_BIN rỗng → fallback 'ffmpeg' (không spawn rỗng)", async () => {
+    // Bug thật Prod 19/09/2026: .env có VTC_FFMPEG_BIN= trống → spawn('')
+    // nổ "The argument 'file' cannot be empty" khi bấm Start ffmpeg.
+    process.env['VTC_FFMPEG_BIN'] = '';
+    try {
+      const m = new TranscodeManager({ killTimeoutMs: 500, progressTimeoutMs: 10000 });
+      m.setHandlers({ onStatus: () => {}, onExit: () => {} });
+      let threwSync: unknown = null;
+      try {
+        m.start('envtest', []);
+      } catch (e) {
+        threwSync = e;
+      }
+      assert.equal(threwSync, null);
+      await m.stop('envtest');
+    } finally {
+      delete process.env['VTC_FFMPEG_BIN'];
+    }
+  });
 });

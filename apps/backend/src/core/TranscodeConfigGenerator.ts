@@ -220,6 +220,17 @@ export function parseTcStartDelayMs(env: string | undefined): number {
   return Number.isFinite(v) && v > 0 ? Math.floor(v) : 1000;
 }
 
+/**
+ * Đọc env chuỗi: trống/whitespace → fallback.
+ * Vá bẫy `??` giữ chuỗi rỗng (VD .env có `VTC_FFMPEG_BIN=` trống → spawn('')
+ * nổ "The argument 'file' cannot be empty" — lỗi thật gặp ở Prod 19/09/2026).
+ */
+export function envNonEmpty(name: string, fallback: string): string {
+  const v = process.env[name];
+  if (v === undefined || v.trim() === '') return fallback;
+  return v;
+}
+
 //-- Secrets (passphrase SRT resolve lúc spawn, KHÔNG persist) --------------------// Format env VTC_SRT_PASSPHRASES: "vtvgo:mat-khau-dai-16+,kenh2:mat-khau-khac".
 
 /** Parse "ref:value,ref2:value2" thành map (bỏ entry rỗng, value giữ nguyên). */

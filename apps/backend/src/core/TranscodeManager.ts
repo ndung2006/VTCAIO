@@ -13,6 +13,7 @@
 import { spawn, type ChildProcess } from 'node:child_process';
 import { EventEmitter } from 'node:events';
 import type { SourceStatus } from './types.js';
+import { envNonEmpty } from './TranscodeConfigGenerator.js';
 
 /** 1 ffmpeg đang quản lý. Key = `${sourceId}/${channelName}`. */
 interface ManagedTranscode {
@@ -72,7 +73,7 @@ export class TranscodeManager extends EventEmitter {
 
   constructor(opts: TranscodeManagerOptions = {}) {
     super();
-    this.ffmpegBin = opts.ffmpegBin ?? process.env['VTC_FFMPEG_BIN'] ?? 'ffmpeg';
+    this.ffmpegBin = opts.ffmpegBin ?? envNonEmpty('VTC_FFMPEG_BIN', 'ffmpeg');
     this.killTimeoutMs = opts.killTimeoutMs ?? 5000;
     this.progressTimeoutMs = opts.progressTimeoutMs ?? 15000;
   }
