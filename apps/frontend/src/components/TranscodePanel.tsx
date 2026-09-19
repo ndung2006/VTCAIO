@@ -252,7 +252,7 @@ export function TranscodePanel(props: {
         </div>
       </div>
       {status?.lastError !== null && status?.lastError !== undefined && status.lastError !== '' && (
-        <pre ref={logRef} className="max-h-24 overflow-auto rounded bg-red-50 p-2 font-mono text-xs text-red-700">
+        <pre ref={logRef} className="max-h-64 overflow-auto rounded bg-red-50 p-2 font-mono text-xs text-red-700">
           Lỗi ffmpeg/output mới nhất:{'\n'}{status.lastError}
         </pre>
       )}

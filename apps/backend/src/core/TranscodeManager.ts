@@ -100,8 +100,8 @@ export class TranscodeManager extends EventEmitter {
   snapshot(key: string): TranscodeSnapshot | undefined {
     const m = this.procs.get(key);
     if (m === undefined) return undefined;
-    // Lấy tối đa 3 dòng stderr cuối (bỏ dòng trống) để hiện lỗi output.
-    const tail = m.stderrBuf.split('\n').map((l) => l.trim()).filter((l) => l !== '').slice(-3).join('\n');
+    // Lấy tối đa 15 dòng stderr cuối (bỏ dòng trống) để hiện lỗi output.
+    const tail = m.stderrBuf.split('\n').map((l) => l.trim()).filter((l) => l !== '').slice(-15).join('\n');
     return {
       key,
       pid: m.pid,
@@ -111,7 +111,7 @@ export class TranscodeManager extends EventEmitter {
       lastProgressAt: m.lastProgressAt,
       crashCount: m.crashes.length,
       startedAtMs: m.startedAtMs,
-      lastError: tail === '' ? null : tail.slice(-500),
+      lastError: tail === '' ? null : tail.slice(-2000),
     };
   }
 
