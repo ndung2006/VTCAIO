@@ -13,6 +13,7 @@ rtmpAddress: :1935
 hls: no
 webrtc: no
 srt: no
+moq: no
 
 # Publish phải có user/pass (đối tác push sai key là 403, log thấy ngay).
 # Pass THẬT đặt qua env MTX_AUTHINTERNALUSERS_0_PASS (xem
