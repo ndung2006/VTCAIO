@@ -177,7 +177,6 @@ export const outputSchema = z
         break;
       case 'rtmp-push':
         need(!!o.url, 'url', 'rtmp-push cần url (VD rtmp://ip-ho/live)');
-        need(!!o.streamKey, 'streamKey', 'rtmp-push cần streamKey');
         break;
       case 'rtmp-in':
         need(!!o.streamKey, 'streamKey', 'rtmp-in cần streamKey trên MediaMTX');

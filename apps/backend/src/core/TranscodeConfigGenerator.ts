@@ -146,7 +146,8 @@ const outputSchema = z
         break;
       case 'rtmp-push':
         need(o.url !== undefined && o.url !== '', 'url', 'rtmp-push bắt buộc có url (VD rtmp://ip-ho/live)');
-        need(o.streamKey !== undefined && o.streamKey !== '', 'streamKey', 'rtmp-push bắt buộc có streamKey');
+        // streamKey optional: Wowza nhúng tên stream trong URL (VD .../live/_definst_/VTCQTV1.stream),
+        // có key thì nối thêm url/key.
         break;
       case 'rtmp-in':
         need(o.streamKey !== undefined && o.streamKey !== '', 'streamKey', 'rtmp-in bắt buộc có streamKey trên MediaMTX');
@@ -604,7 +605,8 @@ export function buildFfmpegArgs(job: FfmpegJob): string[] {
         break;
       case 'rtmp-push': {
         const base = (o.url ?? '').replace(/\/+$/, '');
-        args.push('-f', 'flv', `${base}/${o.streamKey}`);
+        const key = (o.streamKey ?? '').trim().replace(/^\/+/, '');
+        args.push('-f', 'flv', key === '' ? base : `${base}/${key}`);
         break;
       }
       case 'udp-mcast': {

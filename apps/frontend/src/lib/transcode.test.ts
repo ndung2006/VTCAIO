@@ -27,7 +27,8 @@ describe('validateOutput', () => {
       validateOutput({ type: 'srt-caller', presetId: 'p720', enabled: true, port: 9001 }) ?? '',
       /host/,
     );
-    assert.match(validateOutput({ type: 'rtmp-push', presetId: 'p720', enabled: true, url: 'rtmp://x/live' }) ?? '', /streamKey/);
+    assert.match(validateOutput({ type: 'rtmp-push', presetId: 'p720', enabled: true }) ?? '', /url/);
+    assert.equal(validateOutput({ type: 'rtmp-push', presetId: 'p720', enabled: true, url: 'rtmp://x/live/a.stream' }), null);
   });
 
   it('tick mã hóa mà ref trống thì chặn ở form', () => {

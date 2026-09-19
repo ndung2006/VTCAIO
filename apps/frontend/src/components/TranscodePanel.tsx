@@ -323,7 +323,7 @@ export function TranscodePanel(props: {
                     <input value={o.url ?? ''} onChange={(e) => setOutput(i, { url: e.target.value })} className={`${inputCls} font-mono`} />
                   </label>
                   <label className="text-xs">
-                    Stream key
+                    Stream key (trống = URL đã đủ, kiểu Wowza)
                     <input value={o.streamKey ?? ''} onChange={(e) => setOutput(i, { streamKey: e.target.value })} className={`${inputCls} font-mono`} />
                   </label>
                 </div>

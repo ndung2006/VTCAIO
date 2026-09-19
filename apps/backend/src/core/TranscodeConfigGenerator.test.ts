@@ -154,6 +154,17 @@ describe('buildFfmpegArgs', () => {
     assert.ok(args.includes('rtmp://203.0.113.20/live/kênh-1'));
   });
 
+  it('rtmp-push kiểu Wowza (URL đủ, không key) → dùng nguyên URL', () => {
+    const args = buildFfmpegArgs({
+      channelName: 'demo4',
+      loopbackPort: 6001,
+      presets: presetsById(['p720']),
+      outputs: [parseOutput({ type: 'rtmp-push', presetId: 'p720', enabled: true, url: 'rtmp://117.103.224.64:1935/live/_definst_/VTCQTV1.stream' })],
+    });
+    assert.ok(args.includes('flv'));
+    assert.ok(args.includes('rtmp://117.103.224.64:1935/live/_definst_/VTCQTV1.stream'));
+  });
+
   it('udp-mcast ra udp URL đủ pkt_size/localaddr/ttl', () => {
     const args = buildFfmpegArgs({
       channelName: 'demo4',
