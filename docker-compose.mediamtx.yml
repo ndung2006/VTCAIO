@@ -8,7 +8,7 @@ name: vtcaio
 
 services:
   mediamtx:
-    image: bluenviron/mediamtx:v1.9.3
+    image: bluenviron/mediamtx:1.21.0
     container_name: vtcaio-mediamtx
     restart: unless-stopped
     init: true
