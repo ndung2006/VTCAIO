@@ -319,8 +319,10 @@ describe('input file override (lab/source file)', () => {
       outputs: [parseOutput({ type: 'srt-listen', presetId: 'p720', enabled: true, port: 9001 })],
     });
     const ui = udp.indexOf('-i');
-    assert.equal(udp[ui - 4], '-thread_queue_size');
-    assert.equal(udp[ui - 3], '1024');
+    assert.equal(udp[ui - 6], '-thread_queue_size');
+    assert.equal(udp[ui - 5], '1024');
+    assert.equal(udp[ui - 4], '-fflags');
+    assert.equal(udp[ui - 3], '+discardcorrupt');
     assert.equal(udp[ui - 2], '-f');
     assert.equal(udp[ui - 1], 'mpegts');
     assert.ok((udp[ui + 1] ?? '').startsWith('udp://'));

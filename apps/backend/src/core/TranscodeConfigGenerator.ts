@@ -666,7 +666,9 @@ export function buildFfmpegArgs(job: FfmpegJob): string[] {
     // thread_queue_size lớn (mặc định chỉ 8 gói): multicast burst tới là tràn
     // hàng đợi demux → rớt gói → Missing reference/corrupt frame liên tục
     // (lỗi thật gặp ở Prod 19/09/2026).
-    args.push('-thread_queue_size', '1024', '-f', 'mpegts', '-i', inputUrl);
+    // +discardcorrupt: gói nào hỏng thì bỏ (hình đứng 1 nhịp) thay vì cố decode
+    // ra artifact + spam log — đúng cho luồng contribution (đã chốt với user).
+    args.push('-thread_queue_size', '1024', '-fflags', '+discardcorrupt', '-f', 'mpegts', '-i', inputUrl);
   }
   if (filters.length > 0) args.push('-filter_complex', filters.join(';'));
 
