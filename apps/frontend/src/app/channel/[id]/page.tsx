@@ -48,6 +48,10 @@ export default function ChannelPage({ params }: { params: { id: string } }): Rea
   const [found, setFound] = useState<boolean | null>(null);
   const [link, setLink] = useState('');
   const [linkErr, setLinkErr] = useState('');
+  // Query token dùng chung cho cả link gốc lẫn link sau-transcode (token gắn theo tên kênh).
+  const [tokQuery, setTokQuery] = useState('');
+  // Link HLS sau transcode (từ output HLS đã cấu hình) — để test bản encode.
+  const [tcLinks, setTcLinks] = useState<{ preset: string; url: string }[]>([]);
   const [msg, setMsg] = useState('');
   const retries = useRef(0);
   // EPG split-view
@@ -81,6 +85,22 @@ export default function ChannelPage({ params }: { params: { id: string } }): Rea
   useEffect(() => {
     void loadSrc();
   }, [loadSrc]);
+  // Dựng link sau-transcode khi đã có token + cấu hình output HLS (không gọi API thêm).
+  useEffect(() => {
+    const outs = srcInfo?.transcode?.outputs ?? [];
+    if (tokQuery === '') {
+      setTcLinks([]);
+      return;
+    }
+    setTcLinks(
+      outs
+        .filter((o) => o.enabled && o.type === 'hls')
+        .map((o) => ({
+          preset: o.presetId,
+          url: `${window.location.origin}/hls/${encodeURIComponent(name)}/tc-${encodeURIComponent(o.presetId)}/index.m3u8?${tokQuery}`,
+        })),
+    );
+  }, [srcInfo, tokQuery, name]);
   const epgListRef = useRef<HTMLUListElement | null>(null);
   const epgItemRefs = useRef(new Map<string, HTMLLIElement>());
 
@@ -98,6 +118,7 @@ export default function ChannelPage({ params }: { params: { id: string } }): Rea
         return;
       }
       setLink(`${window.location.origin}${tok.url}`);
+      setTokQuery(`token=${tok.token}&exp=${tok.exp}`);
     } catch {
       setFound(false);
       setLinkErr('Không tải được thông tin kênh.');
@@ -240,6 +261,20 @@ export default function ChannelPage({ params }: { params: { id: string } }): Rea
           <p className="text-xs text-slate-500">
             Link có hạn dùng 4 giờ — hết hạn thì trình phát tự cấp lại, link đã copy đi thì hết hiệu lực.
           </p>
+          {tcLinks.length > 0 && (
+            <div className="space-y-2 rounded-xl bg-emerald-50 p-3 shadow">
+              <p className="text-sm font-semibold">LINK SAU TRANSCODE (test bản đã encode)</p>
+              {tcLinks.map((t) => (
+                <div key={t.preset} className="flex items-center gap-2">
+                  <span className="shrink-0 rounded bg-emerald-100 px-2 py-0.5 font-mono text-xs font-semibold">
+                    {t.preset}
+                  </span>
+                  <code className="min-w-0 flex-1 truncate text-xs text-slate-600">{t.url}</code>
+                  <CopyButton text={t.url} />
+                </div>
+              ))}
+            </div>
+          )}
           {linkErr !== '' && <p className="text-sm text-red-600">{linkErr}</p>}
           {found === false &&
             (me !== null && me !== undefined && me.role !== 'admin' ? (

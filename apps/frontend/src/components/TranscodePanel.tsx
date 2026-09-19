@@ -4,7 +4,7 @@
 // (SRT listen/caller, RTMP push, UDP multicast) + nút Test + trạng thái live.
 // Hai tầng backend: đổi enabled/loopbackPort khi RUNNING bị 400 (stop source
 // trước); đổi endpoint thì hot-restart ffmpeg.
-import { useCallback, useEffect, useState } from 'react';
+import { useCallback, useEffect, useRef, useState } from 'react';
 import { api } from '@/lib/api';
 import { CopyButton } from '@/components/CopyButton';
 import {
@@ -67,6 +67,15 @@ export function TranscodePanel(props: {
   const [minting, setMinting] = useState('');
   const [pullLinks, setPullLinks] = useState<Record<string, string>>({});
   const [mintingPull, setMintingPull] = useState('');
+  const logRef = useRef<HTMLPreElement | null>(null);
+
+  const scrollToLog = (): void => {
+    if (logRef.current !== null) {
+      logRef.current.scrollIntoView({ behavior: 'smooth', block: 'center' });
+    } else {
+      setMsg('Chưa có log lỗi ffmpeg — process chạy sạch hoặc chưa chạy.');
+    }
+  };
 
   const key = `${sourceId}/${channelName}`;
   const running = sourceStatus === 'RUNNING';
@@ -230,12 +239,10 @@ export function TranscodePanel(props: {
             {status.crashes > 0 ? ` · crash ${status.crashes} lần` : ''}
           </span>
         )}
-        {status?.lastError !== null && status?.lastError !== undefined && status.lastError !== '' && (
-          <pre className="max-h-24 overflow-auto rounded bg-red-50 p-2 font-mono text-xs text-red-700">
-            Lỗi ffmpeg/output mới nhất:{'\n'}{status.lastError}
-          </pre>
-        )}
         <div className="ml-auto flex gap-2">
+          <button onClick={scrollToLog} className="rounded bg-slate-200 px-3 py-1 text-sm" title="Cuộn tới log lỗi ffmpeg/output mới nhất">
+            Log
+          </button>
           <button onClick={() => void doTc('start')} disabled={busy !== '' || !running} className="rounded bg-green-600 px-3 py-1 text-sm text-white disabled:opacity-50">
             Start ffmpeg
           </button>
@@ -244,6 +251,11 @@ export function TranscodePanel(props: {
           </button>
         </div>
       </div>
+      {status?.lastError !== null && status?.lastError !== undefined && status.lastError !== '' && (
+        <pre ref={logRef} className="max-h-24 overflow-auto rounded bg-red-50 p-2 font-mono text-xs text-red-700">
+          Lỗi ffmpeg/output mới nhất:{'\n'}{status.lastError}
+        </pre>
+      )}
       {msg !== '' && <p className="rounded bg-amber-50 px-3 py-2 text-sm text-slate-700">{msg}</p>}
       {!running && (
         <p className="text-sm text-slate-500">Source chưa RUNNING — start source thì ffmpeg tự chạy theo (sau ~1s). Nút Start ffmpeg tay chỉ dùng khi source đang chạy.</p>

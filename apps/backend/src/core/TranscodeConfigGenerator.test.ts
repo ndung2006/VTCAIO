@@ -311,7 +311,7 @@ describe('input file override (lab/source file)', () => {
     const fi = file.indexOf('-i');
     assert.equal(file[fi + 1], '/mnt/Data/cap.ts');
     assert.equal(file[fi - 1], 'pipe:1'); // không có '-f mpegts' trước -i file (tự detect demuxer)
-    // UDP mặc định: -f mpegts đứng ngay trước -i udp://
+    // UDP mặc định: thread_queue_size + -f mpegts đứng trước -i udp://
     const udp = buildFfmpegArgs({
       channelName: 'udpch',
       loopbackPort: 6001,
@@ -319,6 +319,8 @@ describe('input file override (lab/source file)', () => {
       outputs: [parseOutput({ type: 'srt-listen', presetId: 'p720', enabled: true, port: 9001 })],
     });
     const ui = udp.indexOf('-i');
+    assert.equal(udp[ui - 4], '-thread_queue_size');
+    assert.equal(udp[ui - 3], '1024');
     assert.equal(udp[ui - 2], '-f');
     assert.equal(udp[ui - 1], 'mpegts');
     assert.ok((udp[ui + 1] ?? '').startsWith('udp://'));

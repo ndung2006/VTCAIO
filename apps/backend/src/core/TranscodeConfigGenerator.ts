@@ -663,7 +663,10 @@ export function buildFfmpegArgs(job: FfmpegJob): string[] {
     args.push('-i', inputUrl);
   } else {
     // Production: UDP loopback, ép demuxer mpegts để khỏi probe chờ trên UDP lossy.
-    args.push('-f', 'mpegts', '-i', inputUrl);
+    // thread_queue_size lớn (mặc định chỉ 8 gói): multicast burst tới là tràn
+    // hàng đợi demux → rớt gói → Missing reference/corrupt frame liên tục
+    // (lỗi thật gặp ở Prod 19/09/2026).
+    args.push('-thread_queue_size', '1024', '-f', 'mpegts', '-i', inputUrl);
   }
   if (filters.length > 0) args.push('-filter_complex', filters.join(';'));
 
