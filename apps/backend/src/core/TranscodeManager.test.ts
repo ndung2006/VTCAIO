@@ -134,4 +134,14 @@ describe('TranscodeManager', () => {
       delete process.env['VTC_FFMPEG_BIN'];
     }
   });
+
+  it('snapshot kèm lastError từ stderr (lỗi output hiện được ra UI)', async () => {
+    const bin = script('err.sh', 'echo "rtmp://x: connection refused" >&2\necho "[out#0] Error muxing" >&2\nexec sleep 60');
+    const m = new TranscodeManager({ ffmpegBin: bin, killTimeoutMs: 500, progressTimeoutMs: 10000 });
+    m.start('e', []);
+    await sleep(300);
+    const s = m.snapshot('e');
+    assert.ok(s?.lastError?.includes('connection refused'), 'phải thấy dòng lỗi stderr');
+    await m.stop('e');
+  });
 });

@@ -104,6 +104,8 @@ export interface TcStatus {
   /** Sống quá 30s chưa có frame: thường đang chờ caller SRT đầu tiên. */
   waiting: boolean;
   crashes: number;
+  /** Vài dòng stderr cuối của ffmpeg (lỗi output như RTMP handshake fail). */
+  lastError: string | null;
 }
 
 const IPV4_RE = /^(\d{1,3})\.(\d{1,3})\.(\d{1,3})\.(\d{1,3})$/;

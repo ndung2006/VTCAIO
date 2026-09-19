@@ -2169,6 +2169,7 @@ export function createApi(opts: ApiOptions = {}): {
             stale: tm.isStale(k),
             waiting,
             crashes: s?.crashCount ?? 0,
+            lastError: s?.lastError ?? null,
           };
         }),
       );

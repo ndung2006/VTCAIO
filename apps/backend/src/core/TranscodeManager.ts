@@ -55,6 +55,8 @@ export interface TranscodeSnapshot {
   crashCount: number;
   /** Ms epoch lúc spawn (endpoint suy waiting khi quá lâu chưa có progress). */
   startedAtMs: number;
+  /** Vài dòng stderr cuối (lỗi ffmpeg/output như RTMP handshake fail) — để UI hiện. */
+  lastError: string | null;
 }
 
 // Dòng progress của `ffmpeg -progress pipe:1`: "fps=25.00",
@@ -98,6 +100,8 @@ export class TranscodeManager extends EventEmitter {
   snapshot(key: string): TranscodeSnapshot | undefined {
     const m = this.procs.get(key);
     if (m === undefined) return undefined;
+    // Lấy tối đa 3 dòng stderr cuối (bỏ dòng trống) để hiện lỗi output.
+    const tail = m.stderrBuf.split('\n').map((l) => l.trim()).filter((l) => l !== '').slice(-3).join('\n');
     return {
       key,
       pid: m.pid,
@@ -107,6 +111,7 @@ export class TranscodeManager extends EventEmitter {
       lastProgressAt: m.lastProgressAt,
       crashCount: m.crashes.length,
       startedAtMs: m.startedAtMs,
+      lastError: tail === '' ? null : tail.slice(-500),
     };
   }
 

@@ -172,6 +172,11 @@ export function TranscodePanel(props: {
             {status.crashes > 0 ? ` · crash ${status.crashes} lần` : ''}
           </span>
         )}
+        {status?.lastError !== null && status?.lastError !== undefined && status.lastError !== '' && (
+          <pre className="max-h-24 overflow-auto rounded bg-red-50 p-2 font-mono text-xs text-red-700">
+            Lỗi ffmpeg/output mới nhất:{'\n'}{status.lastError}
+          </pre>
+        )}
         <div className="ml-auto flex gap-2">
           <button onClick={() => void doTc('start')} disabled={busy !== '' || !running} className="rounded bg-green-600 px-3 py-1 text-sm text-white disabled:opacity-50">
             Start ffmpeg
