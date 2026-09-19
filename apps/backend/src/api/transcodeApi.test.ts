@@ -855,3 +855,82 @@ describe('Preset dùng cho ghi sau-encode', () => {
     }
   });
 });
+
+describe('Hot-update tạo thư mục output', () => {
+  it('thêm output hls lúc RUNNING → tự tạo live/<kênh>/tc-<preset>', async () => {
+    const { join: jn2 } = await import('node:path');
+    const { existsSync: ex2, rmSync: rm2 } = await import('node:fs');
+    // Dùng server phụ để khỏi lẫn state (liveDir riêng)
+    setLogDir('/tmp/vtc-test-tc-mkdir-logs');
+    const live3 = '/tmp/vtc-test-tc-live3';
+    rm2(live3, { recursive: true, force: true });
+    const api3 = createApi({
+      port: 0,
+      confDir: '/tmp/vtc-test-tc-conf3',
+      captureDir: '/tmp/vtc-test-tc-caps3',
+      exportsDir: '/tmp/vtc-test-tc-exps3',
+      liveDir: live3,
+      tspBin: '/tmp/vtc-fake-tc-tsp.sh',
+      ffmpegBin: '/tmp/vtc-fake-tc-ffmpeg.sh',
+      jwtSecret: 'test-secret-tc',
+      adminPass: 'test-admin-123',
+      persist: false,
+      autoStart: false,
+    });
+    const s = await api3.listen(0);
+    const b = `http://127.0.0.1:${s.port}`;
+    try {
+      const login = await fetch(`${b}/api/auth/login`, {
+        method: 'POST',
+        headers: { 'content-type': 'application/json' },
+        body: JSON.stringify({ username: 'admin', password: 'test-admin-123' }),
+      });
+      const ck = (login.headers.get('set-cookie') ?? '').split(';')[0] ?? '';
+      const hdrs = { 'content-type': 'application/json', cookie: ck };
+      const mkBody = {
+        id: 'TCM',
+        input: 'file /tmp/vtc-demo/input.ts --repeat',
+        recordAll: false,
+        channels: [
+          {
+            name: 'tcm',
+            serviceId: 72,
+            isLive: true,
+            transcode: {
+              enabled: true,
+              loopbackPort: 6007,
+              presetIds: ['p720'],
+              outputs: [{ type: 'srt-listen', presetId: 'p720', enabled: true, port: 9027 }],
+            },
+          },
+        ],
+      };
+      let r = await fetch(`${b}/api/sources`, { method: 'POST', headers: hdrs, body: JSON.stringify(mkBody) });
+      assert.equal(r.status, 201);
+      r = await fetch(`${b}/api/sources/TCM/start`, { method: 'POST', headers: hdrs });
+      assert.equal(r.status, 200);
+      await new Promise((rr) => setTimeout(rr, 400));
+      // Hot-update: thêm output hls (trước fix là ffmpeg chết im vì thiếu dir)
+      const tc = {
+        enabled: true,
+        loopbackPort: 6007,
+        presetIds: ['p720'],
+        outputs: [
+          { type: 'srt-listen', presetId: 'p720', enabled: true, port: 9027 },
+          { type: 'hls', presetId: 'p720', enabled: true },
+        ],
+      };
+      r = await fetch(`${b}/api/sources/TCM/channels/tcm/transcode`, {
+        method: 'PUT',
+        headers: hdrs,
+        body: JSON.stringify({ transcode: tc }),
+      });
+      assert.equal(r.status, 200);
+      assert.equal(ex2(jn2(live3, 'tcm', 'tc-p720')), true);
+      await fetch(`${b}/api/sources/TCM/stop`, { method: 'POST', headers: hdrs });
+      await fetch(`${b}/api/sources/TCM`, { method: 'DELETE', headers: hdrs });
+    } finally {
+      await s.close();
+    }
+  });
+});

@@ -326,7 +326,18 @@ export class TranscodeService {
       if (p === undefined) throw new Error(`kênh ${ch.name} trỏ preset "${id}" không tồn tại`);
       return p;
     });
-    this.checkEngineOrWarn(t.engine);
+    this.    checkEngineOrWarn(t.engine);
+    // ffmpeg KHÔNG tự tạo thư mục output (playlist HLS, segment ghi đĩa) —
+    // tạo ở đây để hot-update thêm output mới không chết im vì thiếu dir
+    // (ensureSourceDirs chỉ chạy lúc start source).
+    for (const o of t.outputs) {
+      if (o.enabled && o.type === 'hls') {
+        mkdirSync(join(this.liveDir, ch.name, `tc-${o.presetId}`), { recursive: true });
+      }
+    }
+    if (t.recordPresetId !== undefined) {
+      mkdirSync(join(this.captureDir, sourceId, `after-${ch.name}`), { recursive: true });
+    }
     const args = buildFfmpegArgs({
       channelName: ch.name,
       loopbackPort: t.loopbackPort,
