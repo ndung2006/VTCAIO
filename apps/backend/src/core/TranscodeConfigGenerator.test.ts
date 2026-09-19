@@ -1,6 +1,7 @@
 // TranscodeConfigGenerator.test.ts — argv ffmpeg thuần túy, không cần ffmpeg thật.
 import { describe, it } from 'node:test';
 import assert from 'node:assert/strict';
+import { sep } from 'node:path';
 import {
   assertEngineAvailable,
   buildCaptureArgs,
@@ -21,6 +22,7 @@ import {
   parsePuller,
   parseTcStartDelayMs,
   requiredEncoder,
+  tcHlsDir,
   transcodeInputUrl,
   TranscodeError,
 } from './TranscodeConfigGenerator.js';
@@ -373,6 +375,17 @@ describe('normalizeChannelTranscode', () => {
     const n = normalizeChannelTranscode({ enabled: true, loopbackPort: 6001 } as unknown as Parameters<typeof normalizeChannelTranscode>[0]);
     assert.deepEqual(n, { enabled: true, loopbackPort: 6001, presetIds: [], outputs: [], engine: 'cpu' });
   });
+
+  it('normalize giữ recordPresetId (không làm rơi như bug 19/09)', () => {
+    const n = normalizeChannelTranscode({
+      enabled: true,
+      loopbackPort: 6001,
+      presetIds: ['p720'],
+      outputs: [],
+      recordPresetId: 'p720',
+    });
+    assert.equal(n?.recordPresetId, 'p720');
+  });
 });
 
 describe('parseTcStartDelayMs', () => {
@@ -451,5 +464,90 @@ describe('capture agent SDI→UDP', () => {
     assert.ok(norm !== undefined);
     assert.equal(norm.presetId, 'p1080');
     assert.equal(norm.engine, 'cpu');
+  });
+});
+
+describe('output HLS sau transcode', () => {
+  it('argv HLS: playlist + segment theo kênh/preset, live-only', () => {
+    const args = buildFfmpegArgs({
+      channelName: 'dn1',
+      loopbackPort: 6001,
+      presets: presetsById(['p720']),
+      outputs: [parseOutput({ type: 'hls', presetId: 'p720', enabled: true })],
+      hlsDir: '/tmp/vtc-hls',
+    });
+    const s = args.join(' ');
+    assert.ok(args.includes('-f') && args.includes('hls'), 'muxer hls');
+    assert.ok(s.includes('/tmp/vtc-hls/dn1/tc-p720/index.m3u8'), 'playlist theo kênh/preset');
+    assert.ok(s.includes('seg-%05d.ts'), 'segment pattern');
+    assert.ok(s.includes('delete_segments'), 'live-only tự xóa cũ');
+    assert.ok(s.includes('-hls_time 4') || s.includes('4'), 'segment 4s');
+  });
+
+  it('hls không cần field phụ; tcHlsDir lồng dưới kênh', () => {
+    assert.equal(tcHlsDir('/live', 'dn1', 'p720'), ['/live', 'dn1', 'tc-p720'].join(sep));
+    assert.equal(parseOutput({ type: 'hls', presetId: 'p720', enabled: true }).type, 'hls');
+  });
+});
+
+describe('ghi sau-encode ra đĩa', () => {
+  it('output segment 60s + giữ SID gốc + split nhánh ghi (1 nhánh không map 2 lần)', () => {
+    const args = buildFfmpegArgs({
+      channelName: 'dn1',
+      loopbackPort: 6001,
+      presets: presetsById(['p720']),
+      outputs: [parseOutput({ type: 'srt-listen', presetId: 'p720', enabled: true, port: 9001 })],
+      record: { dir: '/cap/TC1/after-dn1', presetId: 'p720', serviceId: 807 },
+    });
+    const s = args.join(' ');
+    assert.ok(args.includes('-f') && args.includes('segment'), 'muxer segment');
+    assert.ok(s.includes('-segment_time 60'), 'chunk 60s cùng nhịp GHI gốc');
+    assert.ok(s.includes('-segment_format_options mpegts_service_id=807'), 'giữ SID gốc trong PAT (qua segment_format_options — -mpegts_service_id trần bị -f segment bỏ qua)');
+    assert.ok(s.includes('-strftime 1'), 'tên file theo giờ (không đè khi restart)');
+    // map 2 nhánh đã split ([v0] serve + [v0r] record) — cùng 1 encode, 2 mux.
+    // Không tốn thêm encode (decode/scale 1 lần), chỉ thêm mux ghi đĩa.
+    const maps = args.filter((a) => a === '[v0]' || a === '[v0r]');
+    assert.ok(maps.length >= 2, 'serve + ghi map 2 nhánh đã split');
+    assert.ok(!s.includes('split=2[s'), '1 rendition dùng thì không split chính (chỉ split phụ ghi)');
+  });
+
+  it('record preset lạ / audio-only / thiếu dir → ném rõ', () => {
+    const base = {
+      channelName: 'v',
+      loopbackPort: 6001,
+      presets: presetsById(['p720', 'paudio']),
+      outputs: [parseOutput({ type: 'srt-listen', presetId: 'p720', enabled: true, port: 9001 })],
+    };
+    assert.throws(() => buildFfmpegArgs({ ...base, record: { dir: '/c', presetId: 'p999', serviceId: 1 } }), /không tồn tại/);
+    assert.throws(() => buildFfmpegArgs({ ...base, record: { dir: '/c', presetId: 'paudio', serviceId: 1 } }), /cần preset video/);
+    assert.throws(() => buildFfmpegArgs({ ...base, record: { dir: '/c', presetId: 'p720', serviceId: 0 } }), /serviceId/);
+  });
+});
+
+describe('ghi sau-encode: split nhánh ghi riêng', () => {
+  it('preset vừa serve vừa ghi → split [v0][v0r], record map [v0r]', () => {
+    const args = buildFfmpegArgs({
+      channelName: 'dn1',
+      loopbackPort: 6001,
+      presets: presetsById(['p720']),
+      outputs: [parseOutput({ type: 'srt-listen', presetId: 'p720', enabled: true, port: 9001 })],
+      record: { dir: '/cap', presetId: 'p720', serviceId: 807 },
+    });
+    const s = args.join(' ');
+    assert.ok(s.includes('[v0t]split=2[v0][v0r]'), 'split nhánh ghi riêng');
+    assert.ok(s.includes('-map [v0r]') || s.includes('[v0r]'), 'record map nhánh riêng');
+  });
+
+  it('preset chỉ ghi (không serve) → map [v0] thẳng, không split', () => {
+    const args = buildFfmpegArgs({
+      channelName: 'dn1',
+      loopbackPort: 6001,
+      presets: presetsById(['p1080', 'p720']),
+      outputs: [parseOutput({ type: 'srt-listen', presetId: 'p1080', enabled: true, port: 9001 })],
+      record: { dir: '/cap', presetId: 'p720', serviceId: 807 },
+    });
+    const s = args.join(' ');
+    assert.ok(s.includes('split=2'), '2 preset video vẫn split chính');
+    assert.ok(!s.includes('[v1r]'), 'record-only map thẳng không cần split phụ');
   });
 });

@@ -183,8 +183,8 @@ export interface TranscodePreset {
   audio: TranscodeAudio;
 }
 
-/** Loại đầu ra transcode (docs/16 §4–§6). */
-export type TranscodeOutputType = 'srt-listen' | 'srt-caller' | 'rtmp-push' | 'rtmp-in' | 'udp-mcast';
+/** Loại đầu ra transcode (docs/16 §4–§6, §8). */
+export type TranscodeOutputType = 'srt-listen' | 'srt-caller' | 'rtmp-push' | 'rtmp-in' | 'udp-mcast' | 'hls';
 
 /**
  * 1 đầu ra: LUÔN gắn đúng 1 rendition qua presetId.
@@ -238,4 +238,10 @@ export interface ChannelTranscode {
   outputs: TranscodeOutput[];
   /** Engine encode (mặc định cpu khi bỏ trống — tương thích DB cũ). */
   engine?: TranscodeEngine | undefined;
+  /**
+   * Ghi sau-encode ra đĩa (docs/16 §8.6): rendition nào được ghi thành chunk
+   * 60s vào `captures/<source>/after-<kênh>/` (Timeshift/Export đọc được).
+   * Bắt buộc là preset video trong presetIds. Thiếu = không ghi sau (mặc định).
+   */
+  recordPresetId?: string | undefined;
 }

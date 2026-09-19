@@ -149,10 +149,12 @@ export function generateConfText(source: SourceConfig): GeneratedConf {
   source.channels.forEach(assertChannel);
 
   const live = source.channels.filter((c) => c.isLive);
-  if (live.length === 0 && !source.recordAll) {
+  const tcOnly = source.channels.filter((c) => !c.isLive && c.transcode?.enabled === true);
+  if (live.length === 0 && !source.recordAll && tcOnly.length === 0) {
     // Conf chỉ còn `-O drop` là vô nghĩa, tốn CPU — chặn từ lúc sinh (như gen-conf.sh).
+    // Kênh transcode-only (tắt live, chỉ đẩy SRT) vẫn có nghĩa nên được qua.
     throw new ConfigError(
-      `Source ${source.id} vô nghĩa: 0 kênh live + recordAll=false (chỉ còn -O drop)`,
+      `Source ${source.id} vô nghĩa: 0 kênh live + recordAll=false + không kênh transcode (chỉ còn -O drop)`,
     );
   }
 
@@ -171,9 +173,11 @@ export function generateConfText(source: SourceConfig): GeneratedConf {
   // Transcode (docs/16 §2): kênh nào bật transcode thì thêm 1 fork SPTS ra
   // UDP loopback cho ffmpeg đọc (điểm cách ly — ffmpeg KHÔNG đọc multicast
   // trực tiếp để giữ giám sát CC-error ở tầng ingest).
+  // Kể cả kênh tắt Live (transcode-only, chỉ đẩy SRT): không fork là ffmpeg
+  // đói input mà không báo gì — bẫy im lặng, đã vá ở đây.
   // Phương án B (mặc định): chỉ sinh khi enabled. Phương án A (luôn sinh
   // sẵn cho mọi kênh live) chốt ở T2 — xem docs/16 §2.3.
-  for (const c of live) {
+  for (const c of source.channels) {
     if (c.transcode?.enabled === true) {
       args.push('-P', 'fork', loopbackForkLine(c.serviceId, c.transcode.loopbackPort));
     }

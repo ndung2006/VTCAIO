@@ -81,3 +81,41 @@ describe('garbageCollector', () => {
     assert.equal(r.expiredCount, 0);
   });
 });
+
+describe('garbageCollector after-record', () => {
+  let root2 = '';
+  let caps2 = '';
+  const DAY2 = 24 * 3600 * 1000;
+
+  // Ghi đè root/caps riêng cho describe này (tránh lẫn beforeEach ngoài)
+  function setup(): void {
+    root2 = mkdtempSync(join(tmpdir(), 'vtc-gc-after-'));
+    caps2 = join(root2, 'captures');
+  }
+  function teardown(): void {
+    rmSync(root2, { recursive: true, force: true });
+  }
+  function putAfter(source: string, ch: string, name: string, ageMs: number): string {
+    const d = join(caps2, source, `after-${ch}`);
+    mkdirSync(d, { recursive: true });
+    const p = join(d, name);
+    writeFileSync(p, 'x'.repeat(10));
+    const t = new Date(Date.now() - ageMs);
+    utimesSync(p, t, t);
+    return p;
+  }
+
+  it('file after-* quá retention của source thì xóa, còn hạn thì giữ', async () => {
+    setup();
+    try {
+      const oldF = putAfter('S1', 'dn1', 'after-20260101-120000.ts', 40 * DAY2);
+      const newF = putAfter('S1', 'dn1', 'after-20260101-130000.ts', 5 * DAY2);
+      const r = await runGarbageCollector({ captureDir: caps2, diskPercentOverride: 10 });
+      assert.equal(existsSync(oldF), false);
+      assert.equal(existsSync(newF), true);
+      assert.equal(r.expiredCount, 1);
+    } finally {
+      teardown();
+    }
+  });
+});

@@ -131,3 +131,51 @@ async function waitFor(ex: Exporter, id: string, timeoutMs = 8000) {
     await new Promise((r) => setTimeout(r, 50));
   }
 }
+
+describe('Exporter after-record subdir', () => {
+  it('resolveChunks đọc thư mục after-<kênh>; submit subdir lạ/khác kênh thì 400', async () => {
+    const root = mkdtempSync(join(tmpdir(), 'vtc-exp-after-'));
+    try {
+      const caps = join(root, 'captures');
+      const exps = join(root, 'exports');
+      mkdirSync(join(caps, 'S1', 'after-dn1'), { recursive: true });
+      mkdirSync(exps, { recursive: true });
+      const f1 = join(caps, 'S1', 'after-dn1', 'after-20260101-120000.ts');
+      writeFileSync(f1, 'x'.repeat(10));
+      const ex = new Exporter({ captureDir: caps, exportsDir: exps, persist: false });
+      const hits = await ex.resolveChunks('S1', Date.now() - 3600000, Date.now(), 'after-dn1');
+      assert.deepEqual(hits, [f1]);
+      assert.deepEqual(await ex.resolveChunks('S1', Date.now() - 3600000, Date.now(), 'after-khac'), []);
+      // submit sai subdir → ExportError
+      await assert.rejects(
+        ex.submit({ channelName: 'dn1', sourceId: 'S1', serviceId: 807, inPoint: 1, outPoint: 2, createdBy: 't', subdir: '../x' }),
+        /không hợp lệ/,
+      );
+      await assert.rejects(
+        ex.submit({ channelName: 'dn1', sourceId: 'S1', serviceId: 807, inPoint: 1, outPoint: 2, createdBy: 't', subdir: 'after-khac' }),
+        /khớp kênh/,
+      );
+    } finally {
+      rmSync(root, { recursive: true, force: true });
+    }
+  });
+
+  it('submit after-* đặt hậu tố -after vào tên file', async () => {
+    const root = mkdtempSync(join(tmpdir(), 'vtc-exp-after2-'));
+    try {
+      const caps = join(root, 'captures');
+      const exps = join(root, 'exports');
+      mkdirSync(join(caps, 'S1', 'after-dn1'), { recursive: true });
+      mkdirSync(exps, { recursive: true });
+      writeFileSync(join(caps, 'S1', 'after-dn1', 'after-20260101-120000.ts'), 'x'.repeat(10));
+      const ex = new Exporter({ captureDir: caps, exportsDir: exps, persist: false, tspBin: '/bin/true' });
+      const job = await ex.submit({
+        channelName: 'dn1', sourceId: 'S1', serviceId: 807,
+        inPoint: Date.now() - 3600000, outPoint: Date.now(), createdBy: 't', subdir: 'after-dn1',
+      });
+      assert.match(job.fileName, /-after\.ts$/);
+    } finally {
+      rmSync(root, { recursive: true, force: true });
+    }
+  });
+});

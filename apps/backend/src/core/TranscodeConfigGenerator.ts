@@ -13,6 +13,7 @@
 //   overrun_nonfatal=1 (không thoát khi đầy đệm) + fifo_size + buffer_size.
 //=============================================================================
 
+import { join } from 'node:path';
 import { z } from 'zod';
 import type {
   ChannelTranscode,
@@ -113,7 +114,7 @@ const presetSchema = z.object({
 
 const outputSchema = z
   .object({
-    type: z.enum(['srt-listen', 'srt-caller', 'rtmp-push', 'rtmp-in', 'udp-mcast']),
+    type: z.enum(['srt-listen', 'srt-caller', 'rtmp-push', 'rtmp-in', 'udp-mcast', 'hls']),
     presetId: z.string().min(1),
     enabled: z.boolean(),
     port: z.number().int().min(1).max(65535).optional(),
@@ -158,6 +159,10 @@ const outputSchema = z
         else need(false, 'port', 'udp-mcast bắt buộc có port');
         need(o.localAddr !== undefined && isIPv4(o.localAddr), 'localAddr', 'udp-mcast bắt buộc nhập IP card phát ra (cấm bỏ trống khi máy nhiều NIC)');
         break;
+      case 'hls':
+        // HLS sau transcode: không cần thêm field (đường ghi suy từ kênh+preset).
+        // Phục vụ qua route FE /hls sẵn có, token ký theo tên kênh gốc.
+        break;
     }
     if (o.group !== undefined && o.type !== 'udp-mcast') {
       need(false, 'group', 'group chỉ dùng cho udp-mcast');
@@ -196,6 +201,22 @@ export function checkOutputPresetRefs(presetIds: string[], outputs: TranscodeOut
   return null;
 }
 
+/** Rendition ghi sau-encode phải là preset video đã tick chọn. */
+export function checkRecordPresetId(
+  presetIds: string[],
+  recordPresetId: string | undefined,
+  presets: TranscodePreset[],
+): string | null {
+  if (recordPresetId === undefined) return null;
+  if (!presetIds.includes(recordPresetId)) {
+    return `ghi sau-encode trỏ rendition "${recordPresetId}" chưa tick chọn ở danh sách preset`;
+  }
+  const p = presets.find((x) => x.id === recordPresetId);
+  if (p === undefined) return `ghi sau-encode trỏ preset "${recordPresetId}" không tồn tại`;
+  if (p.video === null) return 'ghi sau-encode cần preset video (không ghi Audio-Only ra đĩa)';
+  return null;
+}
+
 //-- Migration default cho DB cũ (docs/16 §12) -----------------------------------
 
 /**
@@ -211,6 +232,7 @@ export function normalizeChannelTranscode(t: ChannelTranscode | undefined): Chan
     presetIds: Array.isArray(t.presetIds) ? [...t.presetIds] : [],
     outputs: Array.isArray(t.outputs) ? [...t.outputs] : [],
     engine: t.engine !== undefined && (engines as string[]).includes(t.engine) ? t.engine : 'cpu',
+    ...(typeof t.recordPresetId === 'string' ? { recordPresetId: t.recordPresetId } : {}),
   };
 }
 
@@ -427,6 +449,25 @@ export interface FfmpegJob {
   inputUrl?: string | undefined;
   /** Map ref → passphrase đã resolve từ secret store (KHÔNG persist). */
   secrets?: Record<string, string>;
+  /**
+   * Thư mục HLS gốc (RAMDisk live) để ghi output HLS sau transcode.
+   * Server truyền liveDir vào; mặc định đọc env (lab/test).
+   */
+  hlsDir?: string | undefined;
+  /**
+   * Ghi sau-encode ra đĩa (docs/16 §8.6): chunk 60s vào dir cho sẵn.
+   * Giữ nguyên serviceId gốc trong PAT để Timeshift/Export lọc SID như thường.
+   */
+  record?: { dir: string; presetId: string; serviceId: number } | undefined;
+}
+
+/**
+ * Thư mục ghi HLS của 1 rendition: `<hlsDir>/<kênh>/tc-<preset>/`.
+ * Lồng dưới thư mục kênh để route FE `/hls` phục vụ được ngay với token
+ * ký theo tên kênh gốc (không sửa auth), và healthcheck HLS gốc không ảnh hưởng.
+ */
+export function tcHlsDir(hlsDir: string, channelName: string, presetId: string): string {
+  return join(hlsDir, channelName, `tc-${presetId}`);
 }
 
 //-- Map engine → encoder --------------------------------------------------------
@@ -551,27 +592,63 @@ export function buildFfmpegArgs(job: FfmpegJob): string[] {
     throw new TranscodeError('cổng srt-listen bị trùng (1 port = 1 rendition)');
   }
 
+  // Ghi sau-encode: resolve rendition ghi (bắt buộc video, đã validate ở route).
+  let recordPreset: TranscodePreset | undefined;
+  if (job.record !== undefined) {
+    recordPreset = byId.get(job.record.presetId);
+    if (recordPreset === undefined) {
+      throw new TranscodeError(`ghi sau-encode trỏ presetId "${job.record.presetId}" không tồn tại`);
+    }
+    if (recordPreset.video === null) {
+      throw new TranscodeError('ghi sau-encode cần preset video (không ghi Audio-Only ra đĩa)');
+    }
+    if (!Number.isInteger(job.record.serviceId) || job.record.serviceId < 1 || job.record.serviceId > 65535) {
+      throw new TranscodeError('ghi sau-encode cần serviceId 1..65535 để giữ SID gốc trong PAT');
+    }
+    if (job.record.dir.trim() === '') throw new TranscodeError('ghi sau-encode thiếu thư mục đích');
+  }
+
   // Đánh chỉ số video [v0],[v1]... — CHỈ cho preset có output trỏ tới.
   // ffmpeg BẮT BUỘC mọi nhánh filter_complex đều được -map (nhánh thừa →
   // "Error binding filtergraph inputs/outputs"). Preset không ai dùng thì
   // không sinh nhánh (tiết kiệm cả CPU scale thừa).
+  // Rendition ghi sau-encode cũng cần nhánh (dù không có output trực tiếp).
   const usedIds = new Set(outputs.map((o) => o.presetId));
+  if (recordPreset !== undefined) usedIds.add(recordPreset.id);
   const videoPresets = presets.filter((p) => p.video !== null && usedIds.has(p.id));
   const videoIdx = new Map<string, number>();
   videoPresets.forEach((p, i) => videoIdx.set(p.id, i));
+  // Preset vừa serve vừa ghi: 1 nhánh filter KHÔNG map 2 lần được
+  // ("was already used elsewhere") → split riêng nhánh ghi [vIr].
+  const servedIds = new Set(
+    outputs.filter((o) => (byId.get(o.presetId)?.video ?? null) !== null).map((o) => o.presetId),
+  );
+  const needsSplit = (id: string): boolean => servedIds.has(id) && recordPreset?.id === id;
+  const recLabel = (id: string): string => {
+    const vi = videoIdx.get(id) ?? 0;
+    return needsSplit(id) ? `[v${vi}r]` : `[v${vi}]`;
+  };
 
   // Dựng filter_complex: deinterlace + fps 1 lần rồi split cho N rendition.
   const filters: string[] = [];
   if (videoPresets.length === 1) {
     const p = videoPresets[0];
     if (p?.video === null || p?.video === undefined) throw new TranscodeError('lỗi nội bộ filter');
-    filters.push(`[0:v]yadif,fps=25,scale=${p.video.width}:${p.video.height}[v0]`);
+    if (p !== undefined && needsSplit(p.id)) {
+      filters.push(`[0:v]yadif,fps=25,scale=${p.video.width}:${p.video.height}[v0t];[v0t]split=2[v0][v0r]`);
+    } else {
+      filters.push(`[0:v]yadif,fps=25,scale=${p.video.width}:${p.video.height}[v0]`);
+    }
   } else if (videoPresets.length > 1) {
     const splits = videoPresets.map((_, i) => `[s${i}]`).join('');
     filters.push(`[0:v]yadif,fps=25,split=${videoPresets.length}${splits}`);
     videoPresets.forEach((p, i) => {
       if (p.video === null) throw new TranscodeError('lỗi nội bộ filter');
-      filters.push(`[s${i}]scale=${p.video.width}:${p.video.height}[v${i}]`);
+      if (needsSplit(p.id)) {
+        filters.push(`[s${i}]scale=${p.video.width}:${p.video.height}[v${i}t];[v${i}t]split=2[v${i}][v${i}r]`);
+      } else {
+        filters.push(`[s${i}]scale=${p.video.width}:${p.video.height}[v${i}]`);
+      }
     });
   }
 
@@ -625,9 +702,49 @@ export function buildFfmpegArgs(job: FfmpegJob): string[] {
         args.push('-f', 'mpegts', `udp://${o.group}:${o.port}?pkt_size=1316&localaddr=${o.localAddr}&ttl=${ttl}`);
         break;
       }
+      case 'hls': {
+        // HLS live sau transcode: playlist + segment 4s, giữ 6 bản, tự xóa cũ.
+        // ffmpeg KHÔNG tự tạo thư mục — server tạo ở ensureSourceDirs.
+        const dir = tcHlsDir(job.hlsDir ?? envNonEmpty('VTC_LIVE_DIR', '/media/ramdisk/live'), job.channelName, o.presetId);
+        args.push(
+          '-f', 'hls',
+          '-hls_time', '4',
+          '-hls_list_size', '6',
+          '-hls_flags', 'delete_segments',
+          '-hls_segment_filename', join(dir, 'seg-%05d.ts'),
+          join(dir, 'index.m3u8'),
+        );
+        break;
+      }
       case 'rtmp-in':
         throw new TranscodeError('rtmp-in triển khai ở T3');
     }
+  }
+  if (recordPreset !== undefined && recordPreset.video !== null && job.record !== undefined) {
+    // Ghi sau-encode ra đĩa: chunk 60s (cùng nhịp GHI gốc để Timeshift tính
+    // discontinuity như nhau), giữ SID gốc trong PAT, reuse nhánh filter [vI]
+    // (map lại label đã có — không tốn thêm encode).
+    // Server tạo thư mục ở ensureSourceDirs (ffmpeg không tự tạo).
+    const v = recordPreset.video;
+    const a = recordPreset.audio;
+    args.push(
+      '-map', recLabel(recordPreset.id), '-map', '0:a',
+      ...videoEncoderArgs(engine, v.bitrateKbps, v.gop, v.fps, v.preset),
+      '-c:a', 'aac', '-b:a', `${a.bitrateKbps}k`, '-ar', String(a.sampleRate), '-ac', String(a.channels),
+      // Giữ SID gốc trong PAT để Timeshift/Export lọc SID như thường.
+      // CHÚ Ý: -f segment bỏ qua -mpegts_service_id (option của muxer mpegts
+      // gốc) — phải truyền qua -segment_format_options (đã verify ffprobe).
+      '-segment_format_options', `mpegts_service_id=${job.record.serviceId}`,
+      '-f', 'segment',
+      '-segment_time', '60',
+      '-segment_format', 'mpegts',
+      '-reset_timestamps', '1',
+      // Tên file = epoch giây (strftime %s): đơn điệu tăng mãi nên số thứ tự
+      // MEDIA-SEQUENCE không bao giờ giảm — dùng %H%M%S là request xem qua nửa
+      // đêm bị sequence đảo (player đứng). Xem giờ bằng mtime khi ls.
+      '-strftime', '1',
+      join(job.record.dir, 'after-%s.ts'),
+    );
   }
   return args;
 }

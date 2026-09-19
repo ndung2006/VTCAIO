@@ -74,6 +74,7 @@ ffplay "srt://<ip-may-prod>:9001?streamid=DN1"
 - Bật đủ 4 renditions + audio-only như cấu hình thật, để chạy **24h**.
 - Ghi lại mỗi vài giờ: `fps` từng lúc, %CPU máy (`top`/`htop`), RAM.
 - Kỳ vọng theo số đo lab: ~5 core/kênh 1080i. Máy Prod mà CPU > 85% liên tục → báo lại, tính phương án giảm rendition hoặc tách máy.
+- Nếu bật ghi sau-encode: kiểm tra `captures/<source>/after-<kênh>/` mọc file mỗi phút + Timeshift `?src=after` xem được + Trích xuất `src=after` tải được.
 
 ### Lên Prod: bật mã hóa SRT (làm sau khi test trần đạt)
 

@@ -193,7 +193,15 @@ Quy ước hệ thống: **VTCAIO luôn mở listener** (đối tác caller kéo
 | Live Event | Kênh (input đã có từ Source/SID) | Không nhập lại input |
 | Preset | 4 video + 1 audio-only (lưu DB, dùng lại) | Sửa preset không ảnh hưởng kênh đang chạy |
 | Stream Assembly | Encode settings 1 rendition | video {codec,res,bitrate,fps,gop} + audio {codec,bitrate} |
-| Output Group | SRT group + RTMP group + UDP-mcast group | Phase 1 chỉ cần SRT group chạy thật |
+| Output Group | SRT group + RTMP group + UDP-mcast group + HLS group | Phase 1 chỉ cần SRT group chạy thật |
+
+### 6.5. Output HLS sau transcode (theo yêu cầu nhận HLS rendition)
+
+- ffmpeg ghi thẳng playlist + segment vào `<liveDir>/<kênh>/tc-<preset>/` (`index.m3u8`, `seg-%05d.ts`, segment 4s, giữ 6 bản, tự xóa cũ — live-only, không DVR).
+- Phục vụ qua route FE `/hls` sẵn có (`/hls/<kênh>/tc-<preset>/index.m3u8`): token ký theo **tên kênh gốc** nên không sửa auth; healthcheck HLS gốc không ảnh hưởng (đọc `index.m3u8` gốc từng kênh).
+- ffmpeg không tự tạo thư mục → `ensureSourceDirs` tạo khi start.
+- UI: chọn loại HLS trong output (không cần field phụ) + nút **Lấy link xem** (cấp token theo kênh) + copy.
+- E2E ffmpeg thật (file DN1 1080i): playlist trượt chuẩn 4s, ffprobe đọc được H.264 + AAC, fps=129.
 
 Không làm: Schedule, MPTS mux/statmux, DRM, caption, pre/post script, failover input.
 
@@ -237,6 +245,19 @@ Channel.outputs[] {
 - Tab "Truyền dẫn" trong trang chi tiết kênh: toggle, dropdown preset multi-select, bảng outputs, nút Test, badge trạng thái.
 - **Ẩn hoàn toàn** toggle "ghi trước/sau transcode" ở Phase 1.
 - Badge "đang phát multicast" khi udp-mcast bật; warning CPU trước khi bật thêm kênh.
+
+### 8.5. Output HLS sau transcode
+
+- ffmpeg ghi playlist + segment (`index.m3u8`, `seg-%05d.ts`, segment 4s, giữ 6 bản, tự xóa cũ) vào `<liveDir>/<kênh>/tc-<preset>/`, phục vụ qua route FE `/hls` sẵn có (token theo kênh gốc, không sửa auth).
+- `ensureSourceDirs` tạo thư mục khi start. UI có nút Lấy link xem + copy.
+
+### 8.6. Ghi sau-encode ra đĩa (Timeshift/Trích xuất bản encode)
+
+- `ChannelTranscode.recordPresetId`: rendition nào được ghi (bắt buộc preset video đã tick). Không đặt = không ghi (mặc định, GHI gốc giữ nguyên).
+- ffmpeg output `-f segment` chunk **60s** (cùng nhịp GHI gốc) vào `captures/<source>/after-<kênh>/after-<epoch>.ts` (tên epoch để MEDIA-SEQUENCE đơn điệu tăng mãi — %H%M%S reset nửa đêm làm gãy playlist request qua nửa đêm), **giữ nguyên SID gốc** trong PAT (`-segment_format_options mpegts_service_id=` — `-mpegts_service_id` trần bị `-f segment` bỏ qua, đã verify ffprobe).
+- Nhánh filter ghi split riêng (`[vIr]`) vì 1 nhánh ffmpeg không map 2 lần được.
+- GC dọn `after-*` cùng retention với GHI gốc. Timeshift `?src=after` + Export `src:'after'` đọc thư mục này (lọc SID như thường, `sub` khớp `after-<kênh>` chống xem ké).
+- Đổi rendition ghi = hot-update (restart mỗi ffmpeg). E2E file DN1: segment giải mã được, PAT program 807.
 
 ---
 

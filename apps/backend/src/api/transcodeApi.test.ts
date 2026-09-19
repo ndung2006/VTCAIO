@@ -4,7 +4,8 @@
 // exit 1 khi VTC_FAKE_SRT_FAIL=1 (fail).
 import { describe, it, before, after } from 'node:test';
 import assert from 'node:assert/strict';
-import { writeFileSync, chmodSync, mkdirSync } from 'node:fs';
+import { existsSync, writeFileSync, chmodSync, mkdirSync } from 'node:fs';
+import { join } from 'node:path';
 import { createApi } from './server.js';
 import { setLogDir } from '../core/logger.js';
 
@@ -14,6 +15,7 @@ const fakeSrt = '/tmp/vtc-fake-tc-srt.sh';
 const confDir = '/tmp/vtc-test-tc-conf';
 const capsDir = '/tmp/vtc-test-tc-caps';
 const expsDir = '/tmp/vtc-test-tc-exps';
+const liveDir = '/tmp/vtc-test-tc-live';
 
 const sleep = (ms: number): Promise<void> => new Promise((r) => setTimeout(r, ms));
 
@@ -65,6 +67,7 @@ describe('Transcode API', { concurrency: false }, () => {
       confDir,
       captureDir: capsDir,
       exportsDir: expsDir,
+      liveDir,
       tspBin: fakeTsp,
       ffmpegBin: fakeFfmpeg,
       srtBin: fakeSrt,
@@ -637,5 +640,218 @@ describe('Transcode API', { concurrency: false }, () => {
     assert.equal(ok, true);
     await req('/api/sources/SDI1/stop', { method: 'POST' });
     await req('/api/sources/SDI1', { method: 'DELETE' });
+  });
+  it('timeshift ?src=after đọc thư mục after-<kênh>; sub lạ → 400', async () => {
+    const TCA = {
+      id: 'TCA',
+      input: 'file /tmp/vtc-demo/input.ts --repeat',
+      recordAll: false,
+      channels: [
+        {
+          name: 'tca',
+          serviceId: 81,
+          isLive: true,
+          transcode: {
+            enabled: true,
+            loopbackPort: 6008,
+            presetIds: ['p720'],
+            outputs: [{ type: 'srt-listen', presetId: 'p720', enabled: true, port: 9028 }],
+            recordPresetId: 'p720',
+          },
+        },
+      ],
+    };
+    mkdirSync(join('/tmp/vtc-test-tc-caps', 'TCA', 'after-tca'), { recursive: true });
+    const now = Date.now();
+    writeFileSync(join('/tmp/vtc-test-tc-caps', 'TCA', 'after-tca', 'after-20260101-120000.ts'), 'x'.repeat(100));
+    let r = await req('/api/sources', json(TCA));
+    assert.equal(r.status, 201);
+    const inMs = now - 3600000;
+    const outMs = now + 60000; // tương lai: file vừa ghi có mtime ≈ now vẫn lọt
+    r = await req(`/api/timeshift/tca?in=${inMs}&out=${outMs}&src=after`);
+    assert.equal(r.status, 200);
+    const body = await r.text();
+    assert.ok(body.includes('#EXTM3U') && body.includes('after-20260101-120000.ts'), 'playlist liệt kê chunk after');
+    assert.ok(body.includes('sub=after-tca'), 'segment URI giữ sub');
+    // Kênh chưa bật ghi sau → 404 rõ ràng
+    r = await req('/api/timeshift/tcv1?in=1&out=2&src=after');
+    assert.equal(r.status, 404);
+    // sub không khớp kênh → 400 (lấy URI thật rồi sửa sub)
+    const badUri = body
+      .split('\n')
+      .find((l) => l.startsWith('/api/timeshift/chunks'))
+      ?.replace('sub=after-tca', 'sub=after-xxx');
+    assert.ok(badUri !== undefined);
+    r = await req(badUri);
+    assert.equal(r.status, 400);
+  });
+
+  it('export src=after ra job; kênh chưa bật ghi → 400', async () => {
+    const now = Date.now();
+    let r = await req(
+      '/api/exports',
+      json({ channelName: 'tca', sourceId: 'TCA', serviceId: 81, inPoint: now - 3600000, outPoint: now + 60000, src: 'after' }),
+    );
+    assert.equal(r.status, 200);
+    const job = (await r.json()) as { id: string; status: string };
+    assert.match(job.id, /^exp_/);
+    r = await req(
+      '/api/exports',
+      json({ channelName: 'tcv1', sourceId: 'TC1', serviceId: 11, inPoint: now - 3600000, outPoint: now + 60000, src: 'after' }),
+    );
+    assert.equal(r.status, 400);
+    await req('/api/sources/TCA', { method: 'DELETE' });
+  });
+});
+
+
+describe('Transcode HLS output', () => {
+  it('start tạo thư mục live/<kênh>/tc-<preset> cho output hls', async () => {
+    // Dùng server phụ với liveDir riêng để assert thư mục (server chính dùng chung liveDir suite)
+    setLogDir('/tmp/vtc-test-tc-hls-logs');
+    const live2 = '/tmp/vtc-test-tc-live2';
+    const api2 = createApi({
+      port: 0,
+      confDir: '/tmp/vtc-test-tc-conf2',
+      captureDir: '/tmp/vtc-test-tc-caps2',
+      exportsDir: '/tmp/vtc-test-tc-exps2',
+      liveDir: live2,
+      tspBin: '/tmp/vtc-fake-tc-tsp.sh',
+      ffmpegBin: '/tmp/vtc-fake-tc-ffmpeg.sh',
+      jwtSecret: 'test-secret-tc',
+      adminPass: 'test-admin-123',
+      persist: false,
+      autoStart: false,
+    });
+    const s = await api2.listen(0);
+    const b = `http://127.0.0.1:${s.port}`;
+    try {
+      const login = await fetch(`${b}/api/auth/login`, {
+        method: 'POST',
+        headers: { 'content-type': 'application/json' },
+        body: JSON.stringify({ username: 'admin', password: 'test-admin-123' }),
+      });
+      const ck = (login.headers.get('set-cookie') ?? '').split(';')[0] ?? '';
+      const hdrs = { 'content-type': 'application/json', cookie: ck };
+      const mkBody = {
+        id: 'TCHLS',
+        input: 'file /tmp/vtc-demo/input.ts --repeat',
+        recordAll: false,
+        channels: [
+          {
+            name: 'tchls',
+            serviceId: 71,
+            isLive: true,
+            transcode: {
+              enabled: true,
+              loopbackPort: 6009,
+              presetIds: ['p720'],
+              outputs: [{ type: 'hls', presetId: 'p720', enabled: true }],
+            },
+          },
+        ],
+      };
+      let r = await fetch(`${b}/api/sources`, { method: 'POST', headers: hdrs, body: JSON.stringify(mkBody) });
+      assert.equal(r.status, 201);
+      r = await fetch(`${b}/api/sources/TCHLS/start`, { method: 'POST', headers: hdrs });
+      assert.equal(r.status, 200);
+      assert.equal(existsSync(join(live2, 'tchls', 'tc-p720')), true);
+      await fetch(`${b}/api/sources/TCHLS/stop`, { method: 'POST', headers: hdrs });
+      await fetch(`${b}/api/sources/TCHLS`, { method: 'DELETE', headers: hdrs });
+    } finally {
+      await s.close();
+    }
+  });
+});
+
+describe('Preset dùng cho ghi sau-encode', () => {
+  it('không xóa được preset đang là recordPresetId', async () => {
+    // Tạo preset riêng + source dùng nó CHỈ để ghi (không tick serve)
+    const px = { id: 'px-rec', name: 'REC', video: { codec: 'h264', width: 640, height: 360, bitrateKbps: 800, fps: 25, gop: 50, preset: 'veryfast' }, audio: { codec: 'aac', bitrateKbps: 128, sampleRate: 48000, channels: 2 } };
+    // Dùng server phụ như test HLS (tránh lẫn state suite chính)
+    setLogDir('/tmp/vtc-test-tc-rec-logs');
+    const api2 = createApi({
+      port: 0,
+      confDir: '/tmp/vtc-test-tc-rec-conf',
+      captureDir: '/tmp/vtc-test-tc-rec-caps',
+      exportsDir: '/tmp/vtc-test-tc-rec-exps',
+      liveDir: '/tmp/vtc-test-tc-rec-live',
+      tspBin: '/tmp/vtc-fake-tc-tsp.sh',
+      ffmpegBin: '/tmp/vtc-fake-tc-ffmpeg.sh',
+      jwtSecret: 'test-secret-tc',
+      adminPass: 'test-admin-123',
+      persist: false,
+      autoStart: false,
+    });
+    const s = await api2.listen(0);
+    const b = `http://127.0.0.1:${s.port}`;
+    try {
+      const login = await fetch(`${b}/api/auth/login`, {
+        method: 'POST',
+        headers: { 'content-type': 'application/json' },
+        body: JSON.stringify({ username: 'admin', password: 'test-admin-123' }),
+      });
+      const ck = (login.headers.get('set-cookie') ?? '').split(';')[0] ?? '';
+      const hdrs = { 'content-type': 'application/json', cookie: ck };
+      let r = await fetch(`${b}/api/presets`, { method: 'POST', headers: hdrs, body: JSON.stringify(px) });
+      assert.equal(r.status, 201);
+      r = await fetch(`${b}/api/sources`, {
+        method: 'POST',
+        headers: hdrs,
+        body: JSON.stringify({
+          id: 'TCR',
+          input: 'file /tmp/vtc-demo/input.ts --repeat',
+          recordAll: false,
+          channels: [
+            {
+              name: 'tcr',
+              serviceId: 91,
+              isLive: true,
+              transcode: {
+                enabled: true,
+                loopbackPort: 6007,
+                presetIds: ['p720'],
+                outputs: [{ type: 'srt-listen', presetId: 'p720', enabled: true, port: 9027 }],
+                recordPresetId: 'px-rec',
+              },
+            },
+          ],
+        }),
+      });
+      // recordPresetId không trong presetIds → 400 ngay
+      assert.equal(r.status, 400);
+      assert.match(((await r.json()) as { error: string }).error, /chưa tick chọn/);
+      // Tick thêm px-rec rồi tạo lại → 201, và không xóa được preset đang ghi
+      r = await fetch(`${b}/api/sources`, {
+        method: 'POST',
+        headers: hdrs,
+        body: JSON.stringify({
+          id: 'TCR',
+          input: 'file /tmp/vtc-demo/input.ts --repeat',
+          recordAll: false,
+          channels: [
+            {
+              name: 'tcr',
+              serviceId: 91,
+              isLive: true,
+              transcode: {
+                enabled: true,
+                loopbackPort: 6007,
+                presetIds: ['p720', 'px-rec'],
+                outputs: [{ type: 'srt-listen', presetId: 'p720', enabled: true, port: 9027 }],
+                recordPresetId: 'px-rec',
+              },
+            },
+          ],
+        }),
+      });
+      assert.equal(r.status, 201);
+      r = await fetch(`${b}/api/presets/px-rec`, { method: 'DELETE', headers: hdrs });
+      assert.equal(r.status, 400);
+      assert.match(((await r.json()) as { error: string }).error, /ghi sau-encode/);
+      await fetch(`${b}/api/sources/TCR`, { method: 'DELETE', headers: hdrs });
+    } finally {
+      await s.close();
+    }
   });
 });

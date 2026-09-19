@@ -5,7 +5,7 @@
 import { z } from 'zod';
 
 export type TranscodeEngine = 'cpu' | 'nvenc' | 'qsv' | 'vaapi';
-export type TranscodeOutputType = 'srt-listen' | 'srt-caller' | 'rtmp-push' | 'rtmp-in' | 'udp-mcast';
+export type TranscodeOutputType = 'srt-listen' | 'srt-caller' | 'rtmp-push' | 'rtmp-in' | 'udp-mcast' | 'hls';
 
 export interface TranscodePreset {
   id: string;
@@ -35,6 +35,8 @@ export interface ChannelTranscode {
   presetIds: string[];
   outputs: TranscodeOutput[];
   engine?: TranscodeEngine;
+  /** Rendition ghi sau-encode ra đĩa (chunk 60s, Timeshift/Export đọc được). */
+  recordPresetId?: string;
 }
 
 export interface SourcePuller {
@@ -147,7 +149,7 @@ export const presetSchema = z.object({
 
 export const outputSchema = z
   .object({
-    type: z.enum(['srt-listen', 'srt-caller', 'rtmp-push', 'rtmp-in', 'udp-mcast']),
+    type: z.enum(['srt-listen', 'srt-caller', 'rtmp-push', 'rtmp-in', 'udp-mcast', 'hls']),
     presetId: z.string().min(1, 'output phải gắn 1 rendition (presetId)'),
     enabled: z.boolean(),
     port: z.number().int().min(1).max(65535).optional(),
@@ -188,6 +190,9 @@ export const outputSchema = z
         need(o.port !== undefined && o.port >= 7000 && o.port <= 7099, 'port', 'udp-mcast port 7000..7099');
         need(o.localAddr !== undefined && isIPv4(o.localAddr), 'localAddr', 'cần IP card phát ra');
         break;
+      case 'hls':
+        // HLS sau transcode: không cần field phụ (đường ghi suy từ kênh+preset).
+        break;
     }
   });
 
@@ -197,6 +202,7 @@ export const channelTranscodeSchema = z.object({
   presetIds: z.array(z.string().min(1)),
   outputs: z.array(outputSchema),
   engine: z.enum(['cpu', 'nvenc', 'qsv', 'vaapi']).optional(),
+  recordPresetId: z.string().min(1).max(64).optional(),
 });
 
 /** Validate 1 output → message lỗi đầu tiên (hoặc null = đạt). */
@@ -208,7 +214,7 @@ export function validateOutput(o: TranscodeOutput): string | null {
 }
 
 /** Validate cả khối transcode của kênh. */
-export function validateChannelTranscode(t: ChannelTranscode): string | null {
+export function validateChannelTranscode(t: ChannelTranscode, presets?: TranscodePreset[]): string | null {
   const r = channelTranscodeSchema.safeParse(t);
   if (!r.success) {
     const first = r.error.issues[0];
@@ -221,6 +227,12 @@ export function validateChannelTranscode(t: ChannelTranscode): string | null {
   if (dangling !== undefined) return `output ${dangling.type} trỏ rendition "${dangling.presetId}" chưa tick chọn ở danh sách preset`;
   const ports = t.outputs.filter((o) => o.enabled && o.type === 'srt-listen').map((o) => o.port);
   if (new Set(ports).size !== ports.length) return 'cổng srt-listen bị trùng (1 port = 1 rendition)';
+  if (t.recordPresetId !== undefined) {
+    if (!picked.has(t.recordPresetId)) return `ghi sau-encode trỏ rendition "${t.recordPresetId}" chưa tick chọn ở danh sách preset`;
+    const p = presets?.find((x) => x.id === t.recordPresetId);
+    if (presets !== undefined && p === undefined) return `ghi sau-encode trỏ preset "${t.recordPresetId}" không tồn tại`;
+    if (p !== undefined && p.video === null) return 'ghi sau-encode cần preset video (không ghi Audio-Only ra đĩa)';
+  }
   return null;
 }
 

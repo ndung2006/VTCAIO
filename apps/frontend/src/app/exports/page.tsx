@@ -30,6 +30,7 @@ interface ChannelOpt {
   channelName: string;
   sourceId: string;
   serviceId: number;
+  hasAfterRecord: boolean;
 }
 
 function fmtTime(ms: number): string {
@@ -55,6 +56,7 @@ export default function ExportsPage(): React.JSX.Element {
   const [sel, setSel] = useState('');
   const [inp, setInp] = useState('');
   const [outp, setOutp] = useState('');
+  const [src, setSrc] = useState<'raw' | 'after'>('raw');
   const [msg, setMsg] = useState('');
   const [jobs, setJobs] = useState<ExportJob[]>([]);
   const [confirmDel, setConfirmDel] = useState<ExportJob | null>(null);
@@ -72,6 +74,8 @@ export default function ExportsPage(): React.JSX.Element {
               channelName: c.name,
               sourceId: s.id,
               serviceId: c.serviceId,
+              hasAfterRecord:
+                c.transcode?.enabled === true && c.transcode?.recordPresetId !== undefined,
             })),
           ),
         ),
@@ -94,6 +98,7 @@ export default function ExportsPage(): React.JSX.Element {
     }
     if (a !== '') setInp(toLocalInput(a));
     if (b !== '') setOutp(toLocalInput(b));
+    if (q.get('src') === 'after') setSrc('after');
     if (ch !== '' || a !== '' || b !== '') setMsg('Đã điền sẵn từ chương trình EPG — kiểm tra lại rồi bấm Trích xuất.');
   }, [channels]);
 
@@ -135,6 +140,7 @@ export default function ExportsPage(): React.JSX.Element {
         serviceId: opt.serviceId,
         inPoint: new Date(inp).toISOString(),
         outPoint: new Date(outp).toISOString(),
+        ...(src === 'after' ? { src: 'after' } : {}),
       }),
     });
     if (!r.ok) {
@@ -170,6 +176,15 @@ export default function ExportsPage(): React.JSX.Element {
             </select>
             <input type="datetime-local" value={inp} onChange={(e) => setInp(e.target.value)} className="w-full rounded border px-3 py-2 text-sm" />
             <input type="datetime-local" value={outp} onChange={(e) => setOutp(e.target.value)} className="w-full rounded border px-3 py-2 text-sm" />
+            {channels.find((c) => c.key === sel)?.hasAfterRecord === true && (
+              <label className="flex items-center gap-2 text-sm">
+                Nguồn trích xuất
+                <select value={src} onChange={(e) => setSrc(e.target.value === 'after' ? 'after' : 'raw')} className="rounded border px-2 py-1.5 text-sm">
+                  <option value="raw">Bản gốc (GHI trước transcode)</option>
+                  <option value="after">Bản sau-encode</option>
+                </select>
+              </label>
+            )}
             {msg !== '' && <p className="text-sm text-slate-600">{msg}</p>}
             <button className="rounded bg-slate-900 px-4 py-2 text-sm text-white">Thực hiện trích xuất</button>
           </form>

@@ -7,6 +7,9 @@
 - `apps/backend/src/core/types.ts` — `SourceConfig/ChannelConfig/GeneratedConf/SourceStatus/CcErrorEvent`.
 - `apps/backend/src/core/ConfigGenerator.ts` — `generateConfText()` (thuần túy) + `writeConfFile()` (ghi `storage/conf/<id>.conf`). Validate: tên `[A-Za-z0-9_-]`, sid 0–65535, chặn conf vô nghĩa (0 live + record false).
 - `apps/backend/src/core/ProcessManager.ts` — `start()` spawn `tsp @conf` với `detached:true`, `stdio:['ignore','ignore','pipe']`; `stop()` kill nhóm `(-pid, SIGTERM)` → timeout `SIGKILL`; drain stderr parse CC-error → event; crash không chủ đích → `ERROR` (caller Phase 2 gọi lại `start()` với conf mới, không restart mù).
+- `apps/backend/src/core/TranscodeManager.ts` — như ProcessManager nhưng cho ffmpeg (PGID riêng, `stdio` pipe cả stdout để đọc `-progress`).
+- `apps/backend/src/core/TranscodeConfigGenerator.ts` — preset seed + zod schema + `buildFfmpegArgs()`/`buildPullerArgs()`/`buildCaptureArgs()` thuần túy (không cần ffmpeg thật để test).
+- `apps/backend/src/api/transcodeService.ts` — gom nghiệp vụ transcode/puller/capture (preset store + persist, spawn/kill, restart/alert, probe SRT, validate cổng); `server.ts` chỉ còn định tuyến HTTP + lifecycle tsp.
 - `src/core/*.test.ts` — 4 + 4 test, chạy không cần tsp thật (fake script `exec sleep`).
 - `src/demo-gen.ts` — `npm run gen:demo` in conf DEMO ra terminal.
 

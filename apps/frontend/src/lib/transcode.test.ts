@@ -2,6 +2,7 @@
 import { describe, it } from 'node:test';
 import assert from 'node:assert/strict';
 import { validateCapture, validateChannelTranscode, validateOutput, validatePuller } from './transcode.js';
+import type { ChannelTranscode } from './transcode.js';
 
 const listen = (port: number): Parameters<typeof validateOutput>[0] => ({
   type: 'srt-listen',
@@ -88,5 +89,35 @@ describe('validateCapture', () => {
     assert.equal(validateCapture({ device: 'UltraStudio Mini Recorder', udpPort: 6201 }), null);
     assert.match(validateCapture({ device: '', udpPort: 6201 }) ?? '', /device/);
     assert.match(validateCapture({ device: 'X', udpPort: 6101 }) ?? '', /udpPort/);
+  });
+});
+
+describe('validateOutput hls', () => {
+  it('hls chỉ cần presetId, không đòi port/group', () => {
+    assert.equal(
+      validateOutput({ type: 'hls', presetId: 'p720', enabled: true }),
+      null,
+    );
+  });
+});
+
+describe('validateChannelTranscode recordPresetId', () => {
+  const base: ChannelTranscode = {
+    enabled: true,
+    loopbackPort: 6001,
+    presetIds: ['p720'],
+    outputs: [{ type: 'srt-listen', presetId: 'p720', enabled: true, port: 9001 }],
+  };
+  const presets = [
+    { id: 'p720', name: '720p', video: { codec: 'h264', width: 1280, height: 720, bitrateKbps: 2000, fps: 25, gop: 50, preset: 'veryfast' }, audio: { codec: 'aac', bitrateKbps: 128, sampleRate: 48000, channels: 2 } },
+    { id: 'paudio', name: 'Audio', video: null, audio: { codec: 'aac', bitrateKbps: 128, sampleRate: 48000, channels: 2 } },
+  ] as Parameters<typeof validateChannelTranscode>[1];
+  it('đúng qua; trỏ preset chưa tick / audio-only đều báo', () => {
+    assert.equal(validateChannelTranscode({ ...base, recordPresetId: 'p720' }, presets), null);
+    assert.match(validateChannelTranscode({ ...base, recordPresetId: 'p1080' }, presets) ?? '', /chưa tick chọn/);
+    assert.match(
+      validateChannelTranscode({ ...base, presetIds: ['p720', 'paudio'], recordPresetId: 'paudio' }, presets) ?? '',
+      /cần preset video/,
+    );
   });
 });

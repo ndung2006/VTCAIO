@@ -48,7 +48,8 @@ interface FileEntry {
   size: number;
 }
 
-/** Liệt kê *.ts 1 cấp dưới dir (captures/<SOURCE>/*.ts). */
+/** Liệt kê *.ts dưới captures/<SOURCE>/ + thư mục ghi sau-encode
+ *  (captures/<SOURCE>/after-<kênh>/*.ts) — cùng retention với GHI gốc (docs/16 §8.6). */
 async function listTsFiles(dir: string): Promise<FileEntry[]> {
   const out: FileEntry[] = [];
   let sources: string[];
@@ -57,7 +58,28 @@ async function listTsFiles(dir: string): Promise<FileEntry[]> {
   } catch {
     return out; // thư mục chưa có → không có gì để dọn
   }
+  const pushFile = async (p: string): Promise<void> => {
+    try {
+      const st = await stat(p);
+      if (st.isFile()) out.push({ path: p, mtimeMs: st.mtimeMs, size: st.size });
+    } catch {
+      // file biến mất giữa chừng (đang ghi) → bỏ qua
+    }
+  };
+  const pushDir = async (d: string): Promise<void> => {
+    let names: string[];
+    try {
+      names = await readdir(d);
+    } catch {
+      return;
+    }
+    for (const n of names) {
+      if (!n.endsWith('.ts')) continue;
+      await pushFile(join(d, n));
+    }
+  };
   for (const s of sources) {
+    await pushDir(join(dir, s));
     let names: string[];
     try {
       names = await readdir(join(dir, s));
@@ -65,13 +87,12 @@ async function listTsFiles(dir: string): Promise<FileEntry[]> {
       continue;
     }
     for (const n of names) {
-      if (!n.endsWith('.ts')) continue;
-      const p = join(dir, s, n);
+      if (!n.startsWith('after-')) continue;
       try {
-        const st = await stat(p);
-        if (st.isFile()) out.push({ path: p, mtimeMs: st.mtimeMs, size: st.size });
+        const st = await stat(join(dir, s, n));
+        if (st.isDirectory()) await pushDir(join(dir, s, n));
       } catch {
-        continue; // file biến mất giữa chừng (đang ghi) → bỏ qua
+        continue;
       }
     }
   }

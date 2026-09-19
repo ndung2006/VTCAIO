@@ -31,6 +31,11 @@ export interface ExportRequest {
   inPoint: number;
   outPoint: number;
   createdBy: string;
+  /**
+   * Thư mục con ghi sau-encode (VD `after-DN1`) — trích từ bản encode thay vì GHI gốc.
+   * Bắt buộc khớp `after-<channelName>` (route kiểm tra, chống xem ké kênh khác).
+   */
+  subdir?: string | undefined;
 }
 
 export interface ExportJob extends ExportRequest {
@@ -169,18 +174,26 @@ export class Exporter extends EventEmitter {
         `Hệ thống chỉ hỗ trợ trích xuất tối đa ${this.maxHours} tiếng mỗi lần để đảm bảo an toàn tài nguyên I/O máy chủ. Vui lòng chia nhỏ khoảng thời gian.`,
       );
     }
+    if (req.subdir !== undefined && !/^after-[A-Za-z0-9_-]+$/.test(req.subdir)) {
+      throw new ExportError('thư mục nguồn trích xuất không hợp lệ');
+    }
+    if (req.subdir !== undefined && req.subdir !== `after-${req.channelName}`) {
+      throw new ExportError('thư mục nguồn phải khớp kênh (chống xem ké kênh khác)');
+    }
     const disk = this.getDiskPercent
       ? await this.getDiskPercent()
       : await diskPercentAt(this.exportsDir);
     if (disk !== null && disk > 90) {
       throw new ExportError(`Ổ đĩa exports đã ${disk}% — tạm dừng nhận trích xuất mới, hãy dọn rác trước.`);
     }
-    const chunks = await this.resolveChunks(req.sourceId, req.inPoint, req.outPoint);
+    const chunks = await this.resolveChunks(req.sourceId, req.inPoint, req.outPoint, req.subdir);
     if (chunks.length === 0) {
       throw new ExportError('Không có dữ liệu lưu chiểu trong khoảng thời gian đã chọn');
     }
     const id = `exp_${Date.now().toString(36)}_${(this.seq++).toString(36)}`;
-    const fileName = exportFileName(req.channelName, req.inPoint, req.outPoint);
+    const baseName = exportFileName(req.channelName, req.inPoint, req.outPoint);
+    // Hậu tố -after để phân biệt file trích từ bản sau-encode.
+    const fileName = req.subdir !== undefined ? baseName.replace(/\.ts$/, '-after.ts') : baseName;
     const job: ExportJob = {
       ...req,
       id,
@@ -217,17 +230,18 @@ export class Exporter extends EventEmitter {
   }
 
   /** Map khoảng In/Out → danh sách chunk vật lý (theo mtime overlap). */
-  async resolveChunks(sourceId: string, inMs: number, outMs: number): Promise<string[]> {
+  async resolveChunks(sourceId: string, inMs: number, outMs: number, subdir?: string): Promise<string[]> {
+    const base = subdir !== undefined && subdir !== '' ? join(this.captureDir, sourceId, subdir) : join(this.captureDir, sourceId);
     let names: string[];
     try {
-      names = await readdir(join(this.captureDir, sourceId));
+      names = await readdir(base);
     } catch {
       return [];
     }
     const hits: { path: string; mtime: number }[] = [];
     for (const n of names) {
       if (!n.endsWith('.ts')) continue;
-      const p = join(this.captureDir, sourceId, n);
+      const p = join(base, n);
       try {
         const st = await stat(p);
         if (st.isFile() && st.mtimeMs < outMs && st.mtimeMs + this.chunkMs > inMs) {
@@ -263,7 +277,7 @@ export class Exporter extends EventEmitter {
   private execute(job: ExportJob): Promise<void> {
     return new Promise((resolve) => {
       void (async () => {
-        const chunks = await this.resolveChunks(job.sourceId, job.inPoint, job.outPoint);
+        const chunks = await this.resolveChunks(job.sourceId, job.inPoint, job.outPoint, job.subdir);
         if (chunks.length === 0) {
           this.fail(job, 'Dữ liệu lưu chiểu đã bị dọn trước khi trích xuất chạy');
           return resolve();

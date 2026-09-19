@@ -100,14 +100,17 @@ OUT="storage/conf/${SOURCE}.conf"
 mkdir -p "$(dirname "$OUT")"
 
 live_count=0
+tc_only=0
 for c in $CHANNELS; do
-    # format name:sid:is_live — name không chứa dấu cách khi dùng shell demo
+    # format name:sid:is_live[:loopback] — name không chứa dấu cách khi dùng shell demo
     is_live=$(printf '%s' "$c" | awk -F: '{print $3}')
+    loopback=$(printf '%s' "$c" | awk -F: '{print $4}')
     if [ "$is_live" = "1" ]; then live_count=$((live_count + 1)); fi
+    if [ "$is_live" != "1" ] && [ -n "$loopback" ] && [ "$loopback" != "0" ]; then tc_only=$((tc_only + 1)); fi
 done
 
-if [ "$live_count" -eq 0 ] && [ "$RECORD_ALL" != "1" ]; then
-    die "Source $SOURCE vô nghĩa: 0 kênh live + record_all=0 (chỉ còn -O drop). Từ chối sinh conf."
+if [ "$live_count" -eq 0 ] && [ "$RECORD_ALL" != "1" ] && [ "$tc_only" -eq 0 ]; then
+    die "Source $SOURCE vô nghĩa: 0 kênh live + record_all=0 + không kênh transcode (chỉ còn -O drop). Từ chối sinh conf."
 fi
 
 {
@@ -131,13 +134,13 @@ fi
                 "$sid" "$VTC_LIVE_DIR" "$name" "$VTC_LIVE_DIR" "$name"
         fi
     done
-    # Fork loopback transcode (PORT 1-1 với Node, sau fork HLS — docs/16 §2):
+    # Fork loopback transcode (PORT 1-1 với Node, sau fork HLS — docs/16 §2).
+    # Kể cả kênh tắt live (transcode-only): không fork là ffmpeg đói mà không báo.
     for c in $CHANNELS; do
         name=$(printf '%s' "$c" | awk -F: '{print $1}')
         sid=$(printf '%s' "$c" | awk -F: '{print $2}')
-        is_live=$(printf '%s' "$c" | awk -F: '{print $3}')
         loopback=$(printf '%s' "$c" | awk -F: '{print $4}')
-        if [ "$is_live" = "1" ] && [ -n "$loopback" ] && [ "$loopback" != "0" ]; then
+        if [ -n "$loopback" ] && [ "$loopback" != "0" ]; then
             case "$loopback" in
                 ''|*[!0-9]*) die "kênh $name: loopbackPort '$loopback' phải là số 6000..6099 (trống/0 = không transcode)";;
             esac

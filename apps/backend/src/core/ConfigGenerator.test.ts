@@ -173,3 +173,36 @@ describe('ConfigGenerator', () => {
     );
   });
 });
+
+describe('transcode-only (tắt live vẫn có fork)', () => {
+  it('kênh tắt live + bật transcode → có fork loopback, conf hợp lệ', () => {
+    const gen = generateConfText({
+      id: 'TCONLY',
+      input: 'ip 239.1.1.1:5000',
+      recordAll: false,
+      channels: [
+        {
+          name: 'tconly',
+          serviceId: 71,
+          isLive: false,
+          transcode: { enabled: true, loopbackPort: 6005, presetIds: [], outputs: [] },
+        },
+      ],
+    });
+    assert.ok(gen.content.includes('tsp -P zap 71 -O ip 127.0.0.1:6005'), 'phải có fork loopback');
+    assert.ok(!gen.content.includes('segment.ts'), 'không có fork HLS');
+  });
+
+  it('0 live + không ghi + không transcode → vẫn chặn vô nghĩa', () => {
+    assert.throws(
+      () =>
+        generateConfText({
+          id: 'X',
+          input: 'ip 239.1.1.1:5000',
+          recordAll: false,
+          channels: [{ name: 'c1', serviceId: 1, isLive: false }],
+        }),
+      /vô nghĩa/,
+    );
+  });
+});

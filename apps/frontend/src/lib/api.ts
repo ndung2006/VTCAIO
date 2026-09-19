@@ -270,6 +270,7 @@ export const api = {
 };
 
 /** URL playlist timeshift (SPTS) của 1 chương trình — backend dựng trong RAM. */
-export function timeshiftUrl(channelName: string, inMs: number, outMs: number): string {
-  return `/api/timeshift/${encodeURIComponent(channelName)}?in=${inMs}&out=${outMs}`;
+export function timeshiftUrl(channelName: string, inMs: number, outMs: number, src?: 'after'): string {
+  const base = `/api/timeshift/${encodeURIComponent(channelName)}?in=${inMs}&out=${outMs}`;
+  return src === 'after' ? `${base}&src=after` : base;
 }

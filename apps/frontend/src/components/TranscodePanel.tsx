@@ -5,6 +5,8 @@
 // Hai tầng backend: đổi enabled/loopbackPort khi RUNNING bị 400 (stop source
 // trước); đổi endpoint thì hot-restart ffmpeg.
 import { useCallback, useEffect, useState } from 'react';
+import { api } from '@/lib/api';
+import { CopyButton } from '@/components/CopyButton';
 import {
   tcApi,
   validateChannelTranscode,
@@ -22,6 +24,7 @@ const OUTPUT_TYPES: { v: TranscodeOutputType; label: string }[] = [
   { v: 'srt-caller', label: 'SRT Caller — ta đẩy sang họ (chỉ khi đối tác yêu cầu)' },
   { v: 'rtmp-push', label: 'RTMP đẩy đi' },
   { v: 'udp-mcast', label: 'UDP multicast (kiểm tra LAN)' },
+  { v: 'hls', label: 'HLS sau transcode (xem trên web/VLC)' },
 ];
 
 const ENGINES: { v: TranscodeEngine; label: string }[] = [
@@ -54,10 +57,16 @@ export function TranscodePanel(props: {
   const [loopback, setLoopback] = useState(initial !== undefined ? String(initial.loopbackPort) : '6001');
   const [presetIds, setPresetIds] = useState<string[]>(initial?.presetIds ?? []);
   const [outputs, setOutputs] = useState<TranscodeOutput[]>(initial?.outputs ?? []);
+  const [recordOn, setRecordOn] = useState(initial?.recordPresetId !== undefined);
+  const [recordPreset, setRecordPreset] = useState(initial?.recordPresetId ?? '');
   const [status, setStatus] = useState<TcStatus | null>(null);
   const [msg, setMsg] = useState('');
   const [busy, setBusy] = useState('');
   const [testingPort, setTestingPort] = useState<number | null>(null);
+  const [hlsLinks, setHlsLinks] = useState<Record<string, string>>({});
+  const [minting, setMinting] = useState('');
+  const [pullLinks, setPullLinks] = useState<Record<string, string>>({});
+  const [mintingPull, setMintingPull] = useState('');
 
   const key = `${sourceId}/${channelName}`;
   const running = sourceStatus === 'RUNNING';
@@ -68,6 +77,8 @@ export function TranscodePanel(props: {
     setLoopback(initial !== undefined ? String(initial.loopbackPort) : '6001');
     setPresetIds(initial?.presetIds ?? []);
     setOutputs(initial?.outputs ?? []);
+    setRecordOn(initial?.recordPresetId !== undefined);
+    setRecordPreset(initial?.recordPresetId ?? '');
   }, [initial, channelName]);
 
   useEffect(() => {
@@ -105,7 +116,22 @@ export function TranscodePanel(props: {
       outputs,
       engine,
     };
-    const err = validateChannelTranscode(body);
+    if (recordOn) {
+      if (recordPreset === '') {
+        // Mặc định rendition bitrate cao nhất đã tick (thường là bản đẹp nhất để lưu).
+        const picked = presets.filter((p) => presetIds.includes(p.id) && p.video !== null);
+        picked.sort((a, b) => (b.video?.bitrateKbps ?? 0) - (a.video?.bitrateKbps ?? 0));
+        const top = picked[0];
+        if (top === undefined) {
+          setMsg('bật ghi sau-encode nhưng chưa tick preset video nào.');
+          return;
+        }
+        body.recordPresetId = top.id;
+      } else {
+        body.recordPresetId = recordPreset;
+      }
+    }
+    const err = validateChannelTranscode(body, presets);
     if (err !== null) {
       setMsg(err);
       return;
@@ -149,6 +175,38 @@ export function TranscodePanel(props: {
       setMsg(e instanceof Error ? e.message : 'Test thất bại');
     } finally {
       setTestingPort(null);
+    }
+  };
+
+  const mintHlsLink = async (presetId: string): Promise<void> => {
+    setMinting(presetId);
+    setMsg('');
+    try {
+      const t = await api.hlsToken(channelName);
+      setHlsLinks((prev) => ({
+        ...prev,
+        [presetId]: `${window.location.origin}/hls/${encodeURIComponent(channelName)}/tc-${encodeURIComponent(presetId)}/index.m3u8?token=${t.token}&exp=${t.exp}`,
+      }));
+    } catch (e) {
+      setMsg(e instanceof Error ? e.message : 'Cấp link thất bại');
+    } finally {
+      setMinting('');
+    }
+  };
+
+  const mintPullLink = async (presetId: string): Promise<void> => {
+    setMintingPull(presetId);
+    setMsg('');
+    try {
+      const t = await api.pullToken(channelName);
+      setPullLinks((prev) => ({
+        ...prev,
+        [presetId]: `${window.location.origin}/hls/${encodeURIComponent(channelName)}/tc-${encodeURIComponent(presetId)}/index.m3u8?pull=${t.pull}`,
+      }));
+    } catch (e) {
+      setMsg(e instanceof Error ? e.message : 'Cấp link đối tác thất bại');
+    } finally {
+      setMintingPull('');
     }
   };
 
@@ -349,11 +407,76 @@ export function TranscodePanel(props: {
                   </label>
                 </div>
               )}
+              {o.type === 'hls' && (
+                <div className="text-xs">
+                  <p className="font-mono text-slate-600">
+                    /hls/{channelName}/tc-{o.presetId}/index.m3u8
+                  </p>
+                  <div className="mt-1 flex items-center gap-2">
+                    <button
+                      onClick={() => void mintHlsLink(o.presetId)}
+                      disabled={minting !== ''}
+                      className="rounded bg-sky-700 px-2 py-1 text-xs text-white disabled:opacity-50"
+                    >
+                      {minting === o.presetId ? 'Đang cấp…' : 'Lấy link xem'}
+                    </button>
+                    <button
+                      onClick={() => void mintPullLink(o.presetId)}
+                      disabled={mintingPull !== ''}
+                      title="Link không hết hạn giao cho đối tác kéo"
+                      className="rounded bg-slate-200 px-2 py-1 text-xs disabled:opacity-50"
+                    >
+                      {mintingPull === o.presetId ? 'Đang cấp…' : 'Link đối tác'}
+                    </button>
+                    {hlsLinks[o.presetId] !== undefined && <CopyButton text={hlsLinks[o.presetId] ?? ''} />}
+                  </div>
+                  {hlsLinks[o.presetId] !== undefined && (
+                    <p className="mt-1 break-all font-mono text-slate-500">{hlsLinks[o.presetId]}</p>
+                  )}
+                  {pullLinks[o.presetId] !== undefined && (
+                    <p className="mt-1 break-all font-mono text-slate-500">
+                      Đối tác: {pullLinks[o.presetId]} <CopyButton text={pullLinks[o.presetId] ?? ''} />
+                    </p>
+                  )}
+                </div>
+              )}
               {verr !== null && <p className="text-xs text-red-600">{verr}</p>}
             </div>
           );
         })}
         {outputs.length === 0 && <p className="text-sm text-slate-500">Chưa có output nào — thêm ít nhất 1 (VD SRT mở cổng 9001).</p>}
+      </div>
+
+      <div className="rounded border border-emerald-200 bg-emerald-50 p-3">
+        <label className="flex items-center gap-2 text-sm font-semibold">
+          <input type="checkbox" checked={recordOn} onChange={(e) => setRecordOn(e.target.checked)} />
+          Ghi sau-encode ra đĩa (Timeshift/Trích xuất đọc được bản đã encode)
+        </label>
+        {recordOn && (
+          <div className="mt-2 grid gap-2 md:grid-cols-2">
+            <label className="text-xs">
+              Rendition ghi (trống = tự chọn bitrate cao nhất đã tick)
+              <select
+                value={recordPreset}
+                onChange={(e) => setRecordPreset(e.target.value)}
+                className={`${inputCls} font-mono`}
+              >
+                <option value="">— tự chọn —</option>
+                {presets
+                  .filter((p) => p.video !== null)
+                  .map((p) => (
+                    <option key={p.id} value={p.id}>
+                      {p.name} ({p.video?.bitrateKbps}k)
+                    </option>
+                  ))}
+              </select>
+            </label>
+            <p className="text-xs text-slate-500">
+              Chunk 60s vào thư mục <span className="font-mono">after-{channelName}</span>, giữ SID gốc,
+              retention theo source. Đổi rendition ghi = hot-restart ffmpeg.
+            </p>
+          </div>
+        )}
       </div>
 
       <div>

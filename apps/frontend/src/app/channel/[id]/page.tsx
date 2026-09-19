@@ -57,6 +57,8 @@ export default function ChannelPage({ params }: { params: { id: string } }): Rea
   const [day, setDay] = useState<EpgDayView | null>(null);
   // Player 2 chế độ: live mặc định, vod khi Xem từ EPG.
   const [vod, setVod] = useState<{ url: string; title: string } | null>(null);
+  // Nguồn xem/trích xuất: bản gốc (GHI trước transcode) hay bản sau-encode.
+  const [vodSrc, setVodSrc] = useState<'raw' | 'after'>('raw');
   // EPG: bấm 1 chương trình để chọn → thanh dưới hiện khoảng giờ + nút Xem/Trích xuất.
   const [selId, setSelId] = useState<string | null>(null);
   // Truyền dẫn (admin): cần sourceId + trạng thái source chứa kênh này.
@@ -197,7 +199,7 @@ export default function ChannelPage({ params }: { params: { id: string } }): Rea
     const a = Date.parse(startIso);
     const b = Date.parse(endIso);
     if (!Number.isFinite(a) || !Number.isFinite(b)) return setMsg('Giờ chương trình không hợp lệ.');
-    const url = timeshiftUrl(name, a, b);
+    const url = timeshiftUrl(name, a, b, vodSrc === 'after' ? 'after' : undefined);
     try {
       const r = await fetch(url, { credentials: 'include' });
       if (!r.ok) {
@@ -213,6 +215,7 @@ export default function ChannelPage({ params }: { params: { id: string } }): Rea
 
   const exportProgram = (title: string, startIso: string, endIso: string): void => {
     const q = new URLSearchParams({ channel: name, in: startIso, out: endIso, title });
+    if (vodSrc === 'after') q.set('src', 'after');
     router.push(`/exports?${q.toString()}`);
   };
 
@@ -269,6 +272,17 @@ export default function ChannelPage({ params }: { params: { id: string } }): Rea
               <div className="rounded-xl bg-white p-4 shadow">
                 <div className="mb-2 flex items-center gap-2">
                   <h2 className="font-semibold">Lịch phát sóng</h2>
+                  {srcInfo?.transcode?.recordPresetId !== undefined && (
+                    <select
+                      value={vodSrc}
+                      onChange={(e) => setVodSrc(e.target.value === 'after' ? 'after' : 'raw')}
+                      title="Nguồn xem lại/trích xuất"
+                      className="ml-auto rounded border px-2 py-1 text-xs"
+                    >
+                      <option value="raw">Bản gốc</option>
+                      <option value="after">Bản sau-encode</option>
+                    </select>
+                  )}
                   <input
                     type="date"
                     value={viewDate}
